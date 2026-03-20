@@ -2,16 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Virtual Cathode | Full Control</title>
+    <title>Virtual Cathode</title>
     <style>
-        body { margin: 0; background: #000; overflow: hidden; color: #0f0; font-family: monospace; }
+        body { margin: 0; background: #000; overflow: hidden; }
         #crt-canvas { width: 100vw; height: 100vh; cursor: crosshair; }
-        .hud { position: absolute; top: 20px; right: 20px; text-align: right; pointer-events: none; opacity: 0.6; font-size: 10px; }
     </style>
 </head>
 <body>
 
-    <div class="hud">VIRTUAL CATHODE<br>SCROLL = ZOOM | RIGHT-DRAG = PAN<br>MOVE MOUSE = DRAG BOX</div>
     <canvas id="crt-canvas"></canvas>
     <canvas id="source-buffer" width="1024" height="1024" style="display:none;"></canvas>
 
@@ -27,203 +25,160 @@
 
         const monitor = new VirtualCathode(sourceCanvas, outputCanvas);
 
-        // === INTERACTION ===
-        // Right-drag = pan, scroll = zoom, mouse move = drag box
+        // === INTERACTION: scroll=zoom, right-drag=pan ===
         let isPanning = false;
         let lastMouse = { x: 0, y: 0 };
-        let boxPos = { x: 300, y: 250 };
 
         outputCanvas.addEventListener('mousedown', e => {
-            if (e.button === 2) { isPanning = true; lastMouse = { x: e.clientX, y: e.clientY }; }
+            if (e.button === 2) {
+                isPanning = true;
+                lastMouse = { x: e.clientX, y: e.clientY };
+            }
         });
         outputCanvas.addEventListener('contextmenu', e => e.preventDefault());
         window.addEventListener('mouseup', () => isPanning = false);
         window.addEventListener('mousemove', e => {
-            if (isPanning) {
-                const dx = (e.clientX - lastMouse.x) / window.innerWidth;
-                const dy = (e.clientY - lastMouse.y) / window.innerHeight;
-                monitor.settings.pan.x += dx;
-                monitor.settings.pan.y -= dy;
-                lastMouse = { x: e.clientX, y: e.clientY };
-            }
-            // Box follows mouse — map screen coords to source canvas
-            const s = monitor.settings;
-            const vx = e.clientX / outputCanvas.width;
-            const vy = 1.0 - e.clientY / outputCanvas.height;
-            const sx = (vx - s.pan.x) / s.zoom + 0.5;
-            const sy = (vy - s.pan.y) / s.zoom + 0.5;
-            boxPos.x = sx * 1024;
-            boxPos.y = (1.0 - sy) * 1024;
+            if (!isPanning) return;
+            const dx = (e.clientX - lastMouse.x) / outputCanvas.width;
+            const dy = (e.clientY - lastMouse.y) / outputCanvas.height;
+            monitor.settings.pan.x += dx;
+            monitor.settings.pan.y -= dy;
+            lastMouse = { x: e.clientX, y: e.clientY };
         });
 
         window.addEventListener('wheel', e => {
             const factor = e.deltaY > 0 ? 0.92 : 1.08;
-            monitor.settings.zoom = Math.max(1.0, Math.min(400.0, monitor.settings.zoom * factor));
+            monitor.settings.zoom = Math.max(1.0, Math.min(400.0,
+                monitor.settings.zoom * factor));
         }, { passive: true });
 
         // === TWEAKPANE ===
-        const pane = new Tweakpane.Pane({ title: 'CONTROL DECK' });
-        pane.addInput(monitor.settings, 'zoom', { min: 1, max: 400 });
-        pane.addInput(monitor.settings, 'persistence', { min: 0, max: 0.98 });
-
-        const fPhos = pane.addFolder({ title: 'Phosphor Mask' });
-        fPhos.addInput(monitor.settings, 'maskStrength', { min: 0, max: 1.0, label: 'Strength' });
-        fPhos.addInput(monitor.settings, 'maskScale', { min: 100, max: 2000, label: 'Scale' });
-        fPhos.addInput(monitor.settings, 'blurAmount', { min: 0, max: 0.3, label: 'Blur' });
-        fPhos.addInput(monitor.settings, 'clipExponent', { min: 0.5, max: 10, label: 'Clip Exp' });
+        const pane = new Tweakpane.Pane({ title: 'Virtual Cathode' });
+        const s = monitor.settings;
+        pane.addInput(s, 'zoom',        { min: 1, max: 400 });
+        pane.addInput(s, 'maskScale',   { min: 100, max: 2000, step: 1, label: 'Mask Scale' });
+        pane.addInput(s, 'dotSoftness', { min: 0.01, max: 0.20, label: 'Dot Softness' });
+        pane.addInput(s, 'persistence', { min: 0, max: 0.98 });
+        pane.addInput(s, 'clipExponent',{ min: 0.5, max: 10, label: 'Clip Exp' });
+        pane.addInput(s, 'curvature',   { min: 0, max: 0.1 });
 
         const fBloom = pane.addFolder({ title: 'Bloom' });
-        fBloom.addInput(monitor.settings, 'bloomCore', { min: 0, max: 4.0, label: 'Core' });
-        fBloom.addInput(monitor.settings, 'bloomMid', { min: 0, max: 4.0, label: 'Mid' });
-        fBloom.addInput(monitor.settings, 'bloomHalo', { min: 0, max: 4.0, label: 'Halo' });
+        fBloom.addInput(s, 'bloomCore', { min: 0, max: 4, label: 'Core' });
+        fBloom.addInput(s, 'bloomMid',  { min: 0, max: 4, label: 'Mid' });
+        fBloom.addInput(s, 'bloomHalo', { min: 0, max: 4, label: 'Halo' });
 
-        pane.addInput(monitor.settings, 'curvature', { min: 0, max: 0.1 });
+        // === STATIC TEST CARD ===
+        // Drawn once — no animation needed for verifying phosphor behavior.
+        // Re-drawn on each frame so persistence can be tested by toggling content.
 
-        // === TEST IMAGE ===
-        function drawBox(x, y) {
-            const w = 280, h = 200;
-            const bx = x - w / 2, by = y - h / 2;
-
-            // Window shadow
-            ctx.fillStyle = 'rgba(0,0,0,0.5)';
-            ctx.fillRect(bx + 6, by + 6, w, h);
-
-            // Window body
-            ctx.fillStyle = '#1a1a2e';
-            ctx.fillRect(bx, by, w, h);
-
-            // Title bar
-            ctx.fillStyle = '#2d2d44';
-            ctx.fillRect(bx, by, w, 28);
-
-            // Traffic light dots
-            ctx.fillStyle = '#ff5f56'; ctx.beginPath(); ctx.arc(bx + 16, by + 14, 6, 0, 6.28); ctx.fill();
-            ctx.fillStyle = '#ffbd2e'; ctx.beginPath(); ctx.arc(bx + 34, by + 14, 6, 0, 6.28); ctx.fill();
-            ctx.fillStyle = '#27c93f'; ctx.beginPath(); ctx.arc(bx + 52, by + 14, 6, 0, 6.28); ctx.fill();
-
-            // Title text
-            ctx.font = '14px monospace';
-            ctx.fillStyle = '#aaa';
-            ctx.textAlign = 'center';
-            ctx.fillText('Window Title', bx + w / 2, by + 19);
-
-            // Content
-            ctx.font = '18px monospace';
-            ctx.fillStyle = '#0f0';
-            ctx.textAlign = 'left';
-            ctx.fillText('Move me around!', bx + 16, by + 60);
-            ctx.fillStyle = '#0aa';
-            ctx.fillText('Watch the glow', bx + 16, by + 85);
-            ctx.fillStyle = '#fa0';
-            ctx.fillText('trail behind.', bx + 16, by + 110);
-
-            // Small color block inside
-            ctx.fillStyle = '#f0f';
-            ctx.fillRect(bx + 16, by + 130, 50, 50);
-            ctx.fillStyle = '#0ff';
-            ctx.fillRect(bx + 76, by + 130, 50, 50);
-            ctx.fillStyle = '#ff0';
-            ctx.fillRect(bx + 136, by + 130, 50, 50);
-            ctx.fillStyle = '#fff';
-            ctx.fillRect(bx + 196, by + 130, 50, 50);
-
-            // Window border
-            ctx.strokeStyle = '#444';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(bx, by, w, h);
-        }
-
-        function drawSignal(t) {
+        function drawTestCard() {
             ctx.fillStyle = '#000';
             ctx.fillRect(0, 0, 1024, 1024);
 
-            const s = t * 0.001;
-
-            // Background: swirling color field (bottom half)
-            for (let y = 0; y < 12; y++) {
-                for (let x = 0; x < 16; x++) {
-                    const px = x * 64;
-                    const py = 550 + y * 40;
-                    const hue = (x * 25 + y * 40 + s * 80) % 360;
-                    const sat = 80 + 20 * Math.sin(x * 0.3 + s * 1.7);
-                    const bright = 40 + 25 * Math.sin(x * 0.5 + y * 0.3 + s * 2.5)
-                                      + 15 * Math.cos(y * 0.8 - s * 1.1);
-                    ctx.fillStyle = `hsl(${hue}, ${sat}%, ${Math.max(5, bright)}%)`;
-                    ctx.fillRect(px, py, 64, 40);
-                }
-            }
-
-            // Static labels
-            ctx.font = 'bold 52px monospace';
+            // --- Title ---
+            ctx.font = 'bold 48px monospace';
             ctx.textAlign = 'center';
-            ctx.fillStyle = '#0f0';
-            ctx.fillText('VIRTUAL CATHODE', 512, 70);
+            ctx.fillStyle = '#fff';
+            ctx.fillText('VIRTUAL CATHODE', 512, 64);
 
             ctx.font = '18px monospace';
-            ctx.fillStyle = '#080';
-            ctx.fillText('PHOSPHOR EMULATION ENGINE', 512, 100);
+            ctx.fillStyle = '#888';
+            ctx.fillText('PHOSPHOR EMULATION TEST CARD', 512, 94);
 
-            // Color bars
-            const barColors = ['#f00', '#0f0', '#00f', '#ff0', '#f0f', '#0ff', '#fff'];
-            barColors.forEach((c, i) => {
+            // --- SMPTE-style color bars ---
+            const colors = ['#fff','#ff0','#0ff','#0f0','#f0f','#f00','#00f'];
+            const barW = Math.floor(904 / colors.length);
+            colors.forEach((c, i) => {
                 ctx.fillStyle = c;
-                ctx.fillRect(60 + i * 130, 130, 120, 30);
+                ctx.fillRect(60 + i * barW, 130, barW, 100);
             });
 
-            // Animated text
-            ctx.font = '24px monospace';
-            ctx.textAlign = 'left';
-            const hue2 = (s * 50) % 360;
-            ctx.fillStyle = `hsl(${hue2}, 100%, 60%)`;
-            ctx.fillText('STATUS: ONLINE', 60, 200);
-            ctx.fillStyle = '#888';
-            ctx.fillText('FPS: 60  PERSIST: ' + monitor.settings.persistence.toFixed(2), 60, 230);
-
-            // ASCII art
-            ctx.font = '16px monospace';
-            ctx.fillStyle = '#0a0';
-            const ascii = [
-                '  +--[CRT]--+  ',
-                '  |  (o)(o) |  ',
-                '  |   /__\\  |  ',
-                '  |  |    | |  ',
-                '  +--+----+-+  ',
-                '     ||  ||    ',
-                '    _||__||_   ',
-            ];
-            ascii.forEach((line, i) => ctx.fillText(line, 600, 190 + i * 18));
-
-            // Gradient ramp
-            for (let x = 0; x < 512; x++) {
-                const v = Math.floor((x / 512) * 255);
+            // --- Grayscale ramp ---
+            for (let x = 0; x < 904; x++) {
+                const v = Math.floor((x / 904) * 255);
                 ctx.fillStyle = `rgb(${v},${v},${v})`;
-                ctx.fillRect(60 + x, 350, 1, 20);
+                ctx.fillRect(60 + x, 260, 1, 40);
             }
             ctx.font = '12px monospace';
+            ctx.textAlign = 'left';
             ctx.fillStyle = '#666';
-            ctx.fillText('0', 60, 385);
-            ctx.fillText('255', 548, 385);
+            ctx.fillText('0', 60, 315);
+            ctx.textAlign = 'right';
+            ctx.fillText('255', 964, 315);
 
-            // Animated swirl circle
-            const cx = 800, cy = 430;
-            for (let a = 0; a < 60; a++) {
-                const angle = a * 0.105 + s * 2;
-                const r = 30 + a * 1.5;
-                const hue3 = (a * 6 + s * 100) % 360;
-                const px = cx + Math.cos(angle) * r;
-                const py = cy + Math.sin(angle) * r;
-                ctx.fillStyle = `hsl(${hue3}, 100%, 50%)`;
+            // --- Colored rectangles ---
+            const rects = [
+                { x: 60,  c: '#f00', label: 'R' },
+                { x: 230, c: '#0f0', label: 'G' },
+                { x: 400, c: '#00f', label: 'B' },
+                { x: 570, c: '#ff0', label: 'Y' },
+                { x: 740, c: '#f0f', label: 'M' },
+            ];
+            rects.forEach(r => {
+                ctx.fillStyle = r.c;
+                ctx.fillRect(r.x, 340, 150, 100);
+                ctx.font = 'bold 36px monospace';
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#000';
+                ctx.fillText(r.label, r.x + 75, 400);
+            });
+
+            // --- Fine detail text (for resolution testing) ---
+            ctx.textAlign = 'left';
+            const sizes = [24, 18, 14, 12, 10, 8];
+            let ty = 490;
+            sizes.forEach(sz => {
+                ctx.font = `${sz}px monospace`;
+                ctx.fillStyle = '#0f0';
+                ctx.fillText(`${sz}px: The quick brown fox jumps over the lazy dog`, 60, ty);
+                ty += sz + 6;
+            });
+
+            // --- Convergence crosshatch ---
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1;
+            for (let x = 60; x <= 964; x += 50) {
                 ctx.beginPath();
-                ctx.arc(px, py, 5, 0, 6.28);
-                ctx.fill();
+                ctx.moveTo(x, 680);
+                ctx.lineTo(x, 880);
+                ctx.stroke();
+            }
+            for (let y = 680; y <= 880; y += 50) {
+                ctx.beginPath();
+                ctx.moveTo(60, y);
+                ctx.lineTo(964, y);
+                ctx.stroke();
             }
 
-            // Draggable box
-            drawBox(boxPos.x, boxPos.y);
+            // --- Bright/dark contrast blocks ---
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(60, 910, 200, 80);
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 24px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('WHITE', 160, 958);
+
+            ctx.fillStyle = '#111';
+            ctx.fillRect(280, 910, 200, 80);
+            ctx.fillStyle = '#888';
+            ctx.fillText('DARK', 380, 958);
+
+            ctx.fillStyle = '#0f0';
+            ctx.fillRect(500, 910, 200, 80);
+            ctx.fillStyle = '#000';
+            ctx.fillText('GREEN', 600, 958);
+
+            ctx.fillStyle = '#f00';
+            ctx.fillRect(720, 910, 200, 80);
+            ctx.fillStyle = '#fff';
+            ctx.fillText('RED', 820, 958);
         }
 
+        // Draw once
+        drawTestCard();
+
+        // === RENDER LOOP ===
         function animate(t) {
-            drawSignal(t);
             monitor.render(t);
             requestAnimationFrame(animate);
         }
