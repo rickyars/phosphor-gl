@@ -102,7 +102,6 @@ uniform float uBloomCoreW;
 uniform float uBloomMidW;
 uniform float uBloomHaloW;
 uniform vec2  uPhosphorRes;  // (maskScale, maskScale * 0.5)
-
 in vec2 vUV;
 out vec4 outColor;
 
@@ -170,7 +169,7 @@ void main() {
         }
     }
 
-    // --- Bloom (smooth, in phosphor space) ---
+    // --- Bloom ---
     vec3 bloom = texture(uBloomCoreTex, phosUV).rgb * uBloomCoreW
                + texture(uBloomMidTex,  phosUV).rgb * uBloomMidW
                + texture(uBloomHaloTex, phosUV).rgb * uBloomHaloW;
@@ -200,9 +199,9 @@ class VirtualCathode {
             maskScale: 600,
             dotSoftness: 0.06,
             persistence: 0.85,
-            bloomCore: 0.5,
-            bloomMid: 0.2,
-            bloomHalo: 0.1,
+            bloomCore: 0.06,
+            bloomMid: 0.03,
+            bloomHalo: 0.015,
             clipExponent: 3.0,
             curvature: 0.02,
         };
@@ -229,7 +228,7 @@ class VirtualCathode {
         // Phosphor FBOs (ping-pong, NEAREST, sized to maskScale)
         this._buildPhosphorFBOs();
 
-        // Bloom FBOs (LINEAR, ping-pong pairs for separable blur)
+        // Bloom FBOs (fixed sizes)
         this.bloomCore = [this._createFBO(512, 512, false), this._createFBO(512, 512, false)];
         this.bloomMid  = [this._createFBO(256, 256, false), this._createFBO(256, 256, false)];
         this.bloomHalo = [this._createFBO(128, 128, false), this._createFBO(128, 128, false)];
@@ -237,7 +236,7 @@ class VirtualCathode {
         // Compile programs
         this.progResolve   = this._compile(VERT, FRAG_PHOSPHOR_RESOLVE);
         this.progBlur      = this._compile(VERT, FRAG_BLUR);
-        this.progComposite = this._compile(VERT, FRAG_COMPOSITE);
+        this.progComposite    = this._compile(VERT, FRAG_COMPOSITE);
 
         // Cache uniform locations
         this._cacheUniforms();
@@ -354,13 +353,11 @@ class VirtualCathode {
         // currPhos now has the persisted phosphor data for this frame.
 
         // ---- Pass 2: Bloom (3 scales, separable H+V blur) ----
-        // Each scale: blit phosphor→bloom[0], then ping-pong H/V passes.
-        // More iterations = wider blur radius.
         gl.useProgram(this.progBlur);
 
-        this._blurScale(this.bloomCore, 512, 2);   // core: tight glow
-        this._blurScale(this.bloomMid,  256, 3);   // mid: medium spread
-        this._blurScale(this.bloomHalo, 128, 4);   // halo: wide spread
+        this._blurScale(this.bloomCore, 512, 1);
+        this._blurScale(this.bloomMid,  256, 2);
+        this._blurScale(this.bloomHalo, 128, 2);
 
         // ---- Pass 3: Screen Composite ----
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -413,7 +410,7 @@ class VirtualCathode {
         gl.uniform1i(this.uB.input, 0);
         gl.activeTexture(gl.TEXTURE0);
 
-        // First H pass reads from phosphor FBO
+        // First H pass reads from thresholded bloom extract
         gl.bindFramebuffer(gl.FRAMEBUFFER, fboPair[1].fb);
         gl.viewport(0, 0, size, size);
         gl.uniform2f(this.uB.direction, tx, 0.0);

@@ -5,7 +5,12 @@
     <title>Virtual Cathode</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; }
-        #crt-canvas { width: 100vw; height: 100vh; cursor: crosshair; }
+        #crt-canvas {
+            width: 100vw; height: 100vh;
+            cursor: crosshair;
+            object-fit: contain;
+            image-rendering: pixelated;
+        }
     </style>
 </head>
 <body>
@@ -20,8 +25,8 @@
         const sourceCanvas = document.getElementById('source-buffer');
         const ctx = sourceCanvas.getContext('2d');
         const outputCanvas = document.getElementById('crt-canvas');
-        outputCanvas.width = window.innerWidth;
-        outputCanvas.height = window.innerHeight;
+        outputCanvas.width = 1280;
+        outputCanvas.height = 720;
 
         const monitor = new VirtualCathode(sourceCanvas, outputCanvas);
 
@@ -61,7 +66,6 @@
         // === TWEAKPANE ===
         const pane = new Tweakpane.Pane({ title: 'Virtual Cathode' });
         const s = monitor.settings;
-        pane.addInput(s, 'zoom',        { min: 1, max: 400 });
         pane.addInput(s, 'maskScale',   { min: 100, max: 2000, step: 1, label: 'Mask Scale' });
         pane.addInput(s, 'dotSoftness', { min: 0.01, max: 0.20, label: 'Dot Softness' });
         pane.addInput(s, 'persistence', { min: 0, max: 0.98 });
@@ -69,9 +73,9 @@
         pane.addInput(s, 'curvature',   { min: 0, max: 0.1 });
 
         const fBloom = pane.addFolder({ title: 'Bloom' });
-        fBloom.addInput(s, 'bloomCore', { min: 0, max: 4, label: 'Core' });
-        fBloom.addInput(s, 'bloomMid',  { min: 0, max: 4, label: 'Mid' });
-        fBloom.addInput(s, 'bloomHalo', { min: 0, max: 4, label: 'Halo' });
+        fBloom.addInput(s, 'bloomCore', { min: 0, max: 1, label: 'Core' });
+        fBloom.addInput(s, 'bloomMid',  { min: 0, max: 1, label: 'Mid' });
+        fBloom.addInput(s, 'bloomHalo', { min: 0, max: 1, label: 'Halo' });
 
         // === STATIC TEST CARD ===
         // Drawn once — no animation needed for verifying phosphor behavior.
@@ -210,10 +214,6 @@
         }
         requestAnimationFrame(animate);
 
-        window.addEventListener('resize', () => {
-            outputCanvas.width = window.innerWidth;
-            outputCanvas.height = window.innerHeight;
-        });
     </script>
 </body>
 </html>
