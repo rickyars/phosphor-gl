@@ -50,28 +50,34 @@ void main() {
     outColor = vec4(max(oldCol * uPersist, newCol), 1.0);
 }`;
 
-// --- Pass 2: Blur (for bloom at multiple scales) ---
+// --- Pass 2: Separable Gaussian Blur (horizontal or vertical) ---
+// 13-tap gaussian, run H then V for a proper 2D blur.
+// Multiple iterations widen the effective radius.
 const FRAG_BLUR = `#version 300 es
 precision highp float;
 
 uniform sampler2D uInput;
-uniform float uBlurSize;
-uniform vec2 uTexelSize;
+uniform vec2 uDirection;  // (1/w, 0) for H or (0, 1/h) for V
 
 in vec2 vUV;
 out vec4 outColor;
 
 void main() {
-    vec2 d = uBlurSize * uTexelSize;
-    vec3 c  = texture(uInput, vUV).rgb * 0.25;
-    c += texture(uInput, vUV + vec2( d.x, 0.0)).rgb * 0.125;
-    c += texture(uInput, vUV + vec2(-d.x, 0.0)).rgb * 0.125;
-    c += texture(uInput, vUV + vec2(0.0,  d.y)).rgb * 0.125;
-    c += texture(uInput, vUV + vec2(0.0, -d.y)).rgb * 0.125;
-    c += texture(uInput, vUV + vec2( d.x,  d.y)).rgb * 0.0625;
-    c += texture(uInput, vUV + vec2(-d.x, -d.y)).rgb * 0.0625;
-    c += texture(uInput, vUV + vec2( d.x, -d.y)).rgb * 0.0625;
-    c += texture(uInput, vUV + vec2(-d.x,  d.y)).rgb * 0.0625;
+    // 13-tap gaussian weights (sigma ~4)
+    vec3 c = vec3(0.0);
+    c += texture(uInput, vUV - 6.0 * uDirection).rgb * 0.002216;
+    c += texture(uInput, vUV - 5.0 * uDirection).rgb * 0.008764;
+    c += texture(uInput, vUV - 4.0 * uDirection).rgb * 0.026995;
+    c += texture(uInput, vUV - 3.0 * uDirection).rgb * 0.064759;
+    c += texture(uInput, vUV - 2.0 * uDirection).rgb * 0.120985;
+    c += texture(uInput, vUV - 1.0 * uDirection).rgb * 0.176033;
+    c += texture(uInput, vUV                    ).rgb * 0.199471;
+    c += texture(uInput, vUV + 1.0 * uDirection).rgb * 0.176033;
+    c += texture(uInput, vUV + 2.0 * uDirection).rgb * 0.120985;
+    c += texture(uInput, vUV + 3.0 * uDirection).rgb * 0.064759;
+    c += texture(uInput, vUV + 4.0 * uDirection).rgb * 0.026995;
+    c += texture(uInput, vUV + 5.0 * uDirection).rgb * 0.008764;
+    c += texture(uInput, vUV + 6.0 * uDirection).rgb * 0.002216;
     outColor = vec4(c, 1.0);
 }`;
 
@@ -223,10 +229,10 @@ class VirtualCathode {
         // Phosphor FBOs (ping-pong, NEAREST, sized to maskScale)
         this._buildPhosphorFBOs();
 
-        // Bloom FBOs (LINEAR, fixed sizes)
-        this.bloomCoreFBO = this._createFBO(512, 512, false);
-        this.bloomMidFBO  = this._createFBO(256, 256, false);
-        this.bloomHaloFBO = this._createFBO(128, 128, false);
+        // Bloom FBOs (LINEAR, ping-pong pairs for separable blur)
+        this.bloomCore = [this._createFBO(512, 512, false), this._createFBO(512, 512, false)];
+        this.bloomMid  = [this._createFBO(256, 256, false), this._createFBO(256, 256, false)];
+        this.bloomHalo = [this._createFBO(128, 128, false), this._createFBO(128, 128, false)];
 
         // Compile programs
         this.progResolve   = this._compile(VERT, FRAG_PHOSPHOR_RESOLVE);
@@ -255,8 +261,7 @@ class VirtualCathode {
         const b = this.progBlur;
         this.uB = {
             input:     loc(b, 'uInput'),
-            blurSize:  loc(b, 'uBlurSize'),
-            texelSize: loc(b, 'uTexelSize'),
+            direction: loc(b, 'uDirection'),
         };
 
         // Composite pass
@@ -348,13 +353,14 @@ class VirtualCathode {
 
         // currPhos now has the persisted phosphor data for this frame.
 
-        // ---- Pass 2: Bloom (3 scales) ----
-        // All read from currPhos (the persisted phosphor FBO)
+        // ---- Pass 2: Bloom (3 scales, separable H+V blur) ----
+        // Each scale: blit phosphor→bloom[0], then ping-pong H/V passes.
+        // More iterations = wider blur radius.
         gl.useProgram(this.progBlur);
 
-        this._runBlur(this.bloomCoreFBO, 512, 1.5);
-        this._runBlur(this.bloomMidFBO,  256, 3.0);
-        this._runBlur(this.bloomHaloFBO, 128, 6.0);
+        this._blurScale(this.bloomCore, 512, 2);   // core: tight glow
+        this._blurScale(this.bloomMid,  256, 3);   // mid: medium spread
+        this._blurScale(this.bloomHalo, 128, 4);   // halo: wide spread
 
         // ---- Pass 3: Screen Composite ----
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -379,11 +385,11 @@ class VirtualCathode {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.currPhos.tex);
         gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloomCoreFBO.tex);
+        gl.bindTexture(gl.TEXTURE_2D, this.bloomCore[0].tex);
         gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloomMidFBO.tex);
+        gl.bindTexture(gl.TEXTURE_2D, this.bloomMid[0].tex);
         gl.activeTexture(gl.TEXTURE3);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloomHaloFBO.tex);
+        gl.bindTexture(gl.TEXTURE_2D, this.bloomHalo[0].tex);
 
         this._drawQuad(this.progComposite);
 
@@ -395,19 +401,46 @@ class VirtualCathode {
     // ----------------------------------------------------------
     //  Bloom helper
     // ----------------------------------------------------------
-    _runBlur(targetFBO, size, blurSize) {
+    // Blur a bloom scale: blit phosphor into fbo[0], then ping-pong
+    // H/V separable gaussian passes for `iterations` rounds.
+    _blurScale(fboPair, size, iterations) {
         const gl = this.gl;
-        gl.bindFramebuffer(gl.FRAMEBUFFER, targetFBO.fb);
-        gl.viewport(0, 0, size, size);
+        const tx = 1.0 / size;
 
+        // Step 1: Blit (downsample) currPhos → fboPair[0]
+        // We reuse the blur shader with direction=0 as a passthrough isn't needed;
+        // instead just do one H pass directly from phosphor source.
         gl.uniform1i(this.uB.input, 0);
-        gl.uniform1f(this.uB.blurSize, blurSize);
-        gl.uniform2f(this.uB.texelSize, 1.0 / size, 1.0 / size);
-
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.currPhos.tex);
 
+        // First H pass reads from phosphor FBO
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fboPair[1].fb);
+        gl.viewport(0, 0, size, size);
+        gl.uniform2f(this.uB.direction, tx, 0.0);
+        gl.bindTexture(gl.TEXTURE_2D, this.currPhos.tex);
         this._drawQuad(this.progBlur);
+
+        // First V pass
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fboPair[0].fb);
+        gl.uniform2f(this.uB.direction, 0.0, tx);
+        gl.bindTexture(gl.TEXTURE_2D, fboPair[1].tex);
+        this._drawQuad(this.progBlur);
+
+        // Additional iterations ping-pong between [0] and [1]
+        for (let i = 1; i < iterations; i++) {
+            // H pass: read [0] → write [1]
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fboPair[1].fb);
+            gl.uniform2f(this.uB.direction, tx, 0.0);
+            gl.bindTexture(gl.TEXTURE_2D, fboPair[0].tex);
+            this._drawQuad(this.progBlur);
+
+            // V pass: read [1] → write [0]
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fboPair[0].fb);
+            gl.uniform2f(this.uB.direction, 0.0, tx);
+            gl.bindTexture(gl.TEXTURE_2D, fboPair[1].tex);
+            this._drawQuad(this.progBlur);
+        }
+        // Result always ends up in fboPair[0]
     }
 
     // ----------------------------------------------------------
