@@ -96,18 +96,22 @@ uniform sampler2D uBloomHaloTex;
 uniform float uZoom;
 uniform vec2  uPan;
 uniform float uCurvature;
-uniform float uDotSoftness;
+uniform float uSlotExponent;
 uniform float uClipExp;
 uniform float uBloomCoreW;
 uniform float uBloomMidW;
 uniform float uBloomHaloW;
-uniform vec2  uPhosphorRes;  // (maskScale, maskScale * 0.5)
+uniform vec2  uPhosphorRes;
+uniform float uScreenAspect;
+
 in vec2 vUV;
 out vec4 outColor;
 
-float gauss(float x, float center, float sigma) {
-    float d = x - center;
-    return exp(-0.5 * d * d / (sigma * sigma));
+// Super-gaussian: flat top that falls off steeply at edges.
+// exponent=2 is a normal gaussian, exponent=6+ gives a flat plateau with steep sides.
+float supergauss(float x, float center, float sigma) {
+    float d = abs(x - center) / sigma;
+    return exp(-pow(d, uSlotExponent));
 }
 
 void main() {
@@ -122,50 +126,49 @@ void main() {
         return;
     }
 
-    // --- Zoom / pan → phosphor UV ---
-    // pan=(0,0) = centered, zoom=1 = full CRT visible
-    vec2 phosUV = (curved - 0.5) / uZoom - uPan + 0.5;
+    // --- Zoom / pan to phosphor UV (aspect-corrected for square cells) ---
+    vec2 phosUV = (curved - 0.5) / uZoom;
+    phosUV.x *= uScreenAspect;
+    phosUV -= uPan;
+    phosUV += 0.5;
 
     if (phosUV.x < 0.0 || phosUV.x > 1.0 || phosUV.y < 0.0 || phosUV.y > 1.0) {
         outColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
 
-    // --- Phosphor cell position ---
-    vec2 cellCoord = phosUV * uPhosphorRes;   // position in cell units
-    vec2 cellFrac  = fract(cellCoord);         // 0–1 within the cell
-    vec2 cellIndex = floor(cellCoord);         // integer cell ID
-    vec2 texelSize = 1.0 / uPhosphorRes;      // one cell in UV space
+    // --- Cell coordinate ---
+    vec2 cellCoord = phosUV * uPhosphorRes;
+    vec2 cellFrac  = fract(cellCoord);
 
-    // --- Gaussian sub-pixel mask with neighbor bleeding ---
-    // Each phosphor dot's glow extends beyond its cell boundary.
-    // Sample a 3x3 neighborhood: for each neighbor, its R/G/B dots
-    // contribute gaussian tails at our pixel position.
+    // --- Sub-pixel mask: super-gaussian R/G/B phosphor bars ---
+    // sigmaX = bar half-width, sigmaY = bar half-height
+    // The super-gaussian gives a flat bright center with steep falloff at edges,
+    // and its tails naturally provide glow that fills gaps between bars.
+    float sigmaX = 0.135;
+    float sigmaY = 0.45;
+
+    // 3x3 neighborhood so glow tails bleed across cell boundaries
     vec3 color = vec3(0.0);
-
     for (int dy = -1; dy <= 1; dy++) {
         for (int dx = -1; dx <= 1; dx++) {
-            vec2 neighborIdx = cellIndex + vec2(float(dx), float(dy));
-            vec2 neighborUV  = (neighborIdx + 0.5) * texelSize;
+            vec2 nCoord = cellCoord + vec2(float(dx), float(dy));
+            vec2 nUV = nCoord / uPhosphorRes;
+            nUV = clamp(nUV, vec2(0.0), vec2(1.0));
+            vec3 nColor = texture(uPhosphor, nUV).rgb;
 
-            // Skip out-of-bounds neighbors
-            if (neighborUV.x < 0.0 || neighborUV.x > 1.0 ||
-                neighborUV.y < 0.0 || neighborUV.y > 1.0) continue;
+            // Our position relative to the neighbor cell
+            vec2 f = cellFrac - vec2(float(dx), float(dy));
 
-            vec3 nColor = texture(uPhosphor, neighborUV).rgb;
-            float nLuma = dot(nColor, vec3(0.299, 0.587, 0.114));
-            float sigma = uDotSoftness + nLuma * 0.03;
+            // Vertical envelope (shared by all 3 sub-pixels)
+            float vBar = supergauss(f.y, 0.5, sigmaY);
 
-            // Our position relative to this neighbor's cell origin
-            float fx = cellFrac.x - float(dx);
-            float fy = cellFrac.y - float(dy);
+            // R at 1/6, G at 3/6, B at 5/6 of cell width
+            float pr = supergauss(f.x, 0.167, sigmaX) * vBar;
+            float pg = supergauss(f.x, 0.500, sigmaX) * vBar;
+            float pb = supergauss(f.x, 0.833, sigmaX) * vBar;
 
-            float pr   = gauss(fx, 0.167, sigma);
-            float pg   = gauss(fx, 0.500, sigma);
-            float pb   = gauss(fx, 0.833, sigma);
-            float slot = gauss(fy, 0.5,   sigma * 2.5);
-
-            color += nColor * vec3(pr, pg, pb) * slot;
+            color += nColor * vec3(pr, pg, pb);
         }
     }
 
@@ -196,8 +199,7 @@ class VirtualCathode {
         this.settings = {
             zoom: 1.0,
             pan: { x: 0.0, y: 0.0 },
-            maskScale: 600,
-            dotSoftness: 0.06,
+            slotExponent: 6.0,
             persistence: 0.85,
             bloomCore: 0.06,
             bloomMid: 0.03,
@@ -241,7 +243,6 @@ class VirtualCathode {
         // Cache uniform locations
         this._cacheUniforms();
 
-        this._lastMaskScale = Math.round(this.settings.maskScale);
     }
 
     _cacheUniforms() {
@@ -273,19 +274,20 @@ class VirtualCathode {
             zoom:         loc(c, 'uZoom'),
             pan:          loc(c, 'uPan'),
             curvature:    loc(c, 'uCurvature'),
-            dotSoftness:  loc(c, 'uDotSoftness'),
+            slotExponent: loc(c, 'uSlotExponent'),
             clipExp:      loc(c, 'uClipExp'),
             bloomCoreW:   loc(c, 'uBloomCoreW'),
             bloomMidW:    loc(c, 'uBloomMidW'),
             bloomHaloW:   loc(c, 'uBloomHaloW'),
             phosphorRes:  loc(c, 'uPhosphorRes'),
+            screenAspect: loc(c, 'uScreenAspect'),
         };
     }
 
     _buildPhosphorFBOs() {
         const gl = this.gl;
-        const pw = Math.round(this.settings.maskScale);
-        const ph = Math.round(pw * 0.5);
+        const pw = this.source.width;
+        const ph = this.source.height;
 
         // Destroy old FBOs if they exist
         if (this.phosA) {
@@ -309,7 +311,6 @@ class VirtualCathode {
         }
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-        // Ping-pong: currPhos receives this frame, prevPhos has last frame
         this.currPhos = this.phosA;
         this.prevPhos = this.phosB;
     }
@@ -321,17 +322,18 @@ class VirtualCathode {
         const gl = this.gl;
         const s = this.settings;
 
-        // Rebuild phosphor FBOs if maskScale changed
-        const ms = Math.round(s.maskScale);
-        if (ms !== this._lastMaskScale) {
-            this._buildPhosphorFBOs();
-            this._lastMaskScale = ms;
-        }
 
         // Upload source canvas to texture
         gl.bindTexture(gl.TEXTURE_2D, this.sourceTex);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,
                       gl.UNSIGNED_BYTE, this.source);
+
+        // Rebuild phosphor FBOs if maskScale or cellAspect changed
+        const msKey = `${this.source.width}_${this.source.height}`;
+        if (msKey !== this._lastMsKey) {
+            this._buildPhosphorFBOs();
+            this._lastMsKey = msKey;
+        }
 
         // ---- Pass 1: Phosphor Resolve + Persistence ----
         // Writes to currPhos. Reads source + prevPhos.
@@ -372,12 +374,13 @@ class VirtualCathode {
         gl.uniform1f(this.uC.zoom, s.zoom);
         gl.uniform2f(this.uC.pan, s.pan.x, s.pan.y);
         gl.uniform1f(this.uC.curvature, s.curvature);
-        gl.uniform1f(this.uC.dotSoftness, s.dotSoftness);
+        gl.uniform1f(this.uC.slotExponent, s.slotExponent);
         gl.uniform1f(this.uC.clipExp, s.clipExponent);
         gl.uniform1f(this.uC.bloomCoreW, s.bloomCore);
         gl.uniform1f(this.uC.bloomMidW, s.bloomMid);
         gl.uniform1f(this.uC.bloomHaloW, s.bloomHalo);
         gl.uniform2f(this.uC.phosphorRes, this.phosW, this.phosH);
+        gl.uniform1f(this.uC.screenAspect, this.canvas.width / this.canvas.height);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.currPhos.tex);
