@@ -1,24 +1,13 @@
 // ============================================================
-//  VirtualCathode — CRT phosphor emulation via phosphor-space FBO
+//  VirtualCathode — CRT phosphor emulation
 // ============================================================
 //
-//  Architecture:
-//    Source Canvas (1024x1024)
-//        ↓
-//    [Pass 1: Phosphor Resolve + Persistence]
-//        → Phosphor FBO (maskScale × maskScale/2, NEAREST)
-//        Each texel = one triad cell, sampled at cell center
-//        Blended with previous frame: max(old * decay, new)
-//        ↓
-//    [Pass 2: Bloom]  → 3 blur FBOs (512, 256, 128)
-//        Read from persisted phosphor FBO
-//        ↓
-//    [Pass 3: Screen Composite] → Screen
-//        Read phosphor cell (NEAREST), apply gaussian mask,
-//        add bloom, apply curvature + energy clipping
+//  Pass 1: Phosphor Resolve + Persistence -> Phosphor FBO (source size, NEAREST)
+//  Pass 2: Bloom Extract -> 512x512 FBO
+//  Pass 3: Bloom Blur -> 3 scales (512, 256, 128)
+//  Pass 4: Screen Composite -> Screen (phosphor mask, scanlines, bloom, curvature)
 // ============================================================
 
-// --- Shared vertex shader ---
 const VERT = `#version 300 es
 in vec2 aPos;
 out vec2 vUV;
@@ -27,43 +16,67 @@ void main() {
     gl_Position = vec4(aPos, 0.0, 1.0);
 }`;
 
-// --- Pass 1: Phosphor Resolve + Persistence ---
-// Each texel in this FBO IS one phosphor triad cell.
-// vUV maps 0–1 across the phosphor grid, which also maps 0–1 across the source.
-// No coordinate inversion needed — the FBO resolution does the snapping.
 const FRAG_PHOSPHOR_RESOLVE = `#version 300 es
 precision highp float;
 
 uniform sampler2D uSource;
 uniform sampler2D uPrev;
 uniform float uPersist;
+uniform float uFocus;
+uniform vec2  uSourceTexel;
 
 in vec2 vUV;
 out vec4 outColor;
 
 void main() {
-    // Sample source at this cell's center (Y-flip for canvas coordinates)
-    vec3 newCol = texture(uSource, vec2(vUV.x, 1.0 - vUV.y)).rgb;
-    // Previous persisted phosphor value
+    vec2 uv = vec2(vUV.x, 1.0 - vUV.y);
+
+    // 4-tap box filter: fatten thin strokes
+    vec2 off = uSourceTexel * 0.25;
+    vec3 newCol = (
+        texture(uSource, uv + vec2(-off.x, -off.y)).rgb +
+        texture(uSource, uv + vec2( off.x, -off.y)).rgb +
+        texture(uSource, uv + vec2(-off.x,  off.y)).rgb +
+        texture(uSource, uv + vec2( off.x,  off.y)).rgb
+    ) * 0.25;
+
+    // Horizontal sharpening: 3-tap Laplacian
+    vec3 left  = texture(uSource, uv + vec2(-uSourceTexel.x, 0.0)).rgb;
+    vec3 right = texture(uSource, uv + vec2( uSourceTexel.x, 0.0)).rgb;
+    newCol = max(newCol + uFocus * (newCol * 2.0 - left - right), vec3(0.0));
+
     vec3 oldCol = texture(uPrev, vUV).rgb;
-    // Persistence: phosphor decays, but re-excitation takes the max
     outColor = vec4(max(oldCol * uPersist, newCol), 1.0);
 }`;
 
-// --- Pass 2: Separable Gaussian Blur (horizontal or vertical) ---
-// 13-tap gaussian, run H then V for a proper 2D blur.
-// Multiple iterations widen the effective radius.
+const FRAG_BLOOM_EXTRACT = `#version 300 es
+precision highp float;
+
+uniform sampler2D uInput;
+uniform float uThreshold;
+
+in vec2 vUV;
+out vec4 outColor;
+
+void main() {
+    vec3 c = texture(uInput, vUV).rgb;
+    float luma = dot(c, vec3(0.299, 0.587, 0.114));
+    float knee = uThreshold * 0.5;
+    float w = smoothstep(uThreshold - knee, uThreshold + knee, luma);
+    outColor = vec4(c * w, 1.0);
+}`;
+
 const FRAG_BLUR = `#version 300 es
 precision highp float;
 
 uniform sampler2D uInput;
-uniform vec2 uDirection;  // (1/w, 0) for H or (0, 1/h) for V
+uniform vec2 uDirection;
 
 in vec2 vUV;
 out vec4 outColor;
 
 void main() {
-    // 13-tap gaussian weights (sigma ~4)
+    // 13-tap gaussian (sigma ~4)
     vec3 c = vec3(0.0);
     c += texture(uInput, vUV - 6.0 * uDirection).rgb * 0.002216;
     c += texture(uInput, vUV - 5.0 * uDirection).rgb * 0.008764;
@@ -81,10 +94,6 @@ void main() {
     outColor = vec4(c, 1.0);
 }`;
 
-// --- Pass 3: Screen Composite ---
-// For each screen pixel: find which phosphor cell it's in,
-// read the cell color, apply gaussian sub-pixel mask, add bloom,
-// apply curvature and energy clipping.
 const FRAG_COMPOSITE = `#version 300 es
 precision highp float;
 
@@ -97,25 +106,29 @@ uniform float uZoom;
 uniform vec2  uPan;
 uniform float uCurvature;
 uniform float uSlotExponent;
+uniform float uScanlineStr;
 uniform float uClipExp;
 uniform float uBloomCoreW;
 uniform float uBloomMidW;
 uniform float uBloomHaloW;
+uniform float uBloomStrength;
 uniform vec2  uPhosphorRes;
 uniform float uScreenAspect;
+uniform float uScreenHeight;
+uniform float uMaskLODStart;
+uniform float uMaskLODEnd;
 
 in vec2 vUV;
 out vec4 outColor;
 
-// Super-gaussian: flat top that falls off steeply at edges.
-// exponent=2 is a normal gaussian, exponent=6+ gives a flat plateau with steep sides.
-float supergauss(float x, float center, float sigma) {
-    float d = abs(x - center) / sigma;
-    return exp(-pow(d, uSlotExponent));
+// Super-gaussian phosphor bar shape
+float core(float d, float sigma) {
+    float n = d / sigma;
+    return exp(-pow(abs(n), uSlotExponent));
 }
 
 void main() {
-    // --- Barrel distortion (curvature) ---
+    // Barrel distortion
     vec2 c = vUV * 2.0 - 1.0;
     float r2 = dot(c, c);
     c *= 1.0 + r2 * uCurvature + r2 * r2 * uCurvature * 0.5;
@@ -126,7 +139,7 @@ void main() {
         return;
     }
 
-    // --- Zoom / pan to phosphor UV (aspect-corrected for square cells) ---
+    // Zoom/pan to phosphor UV (aspect-corrected)
     vec2 phosUV = (curved - 0.5) / uZoom;
     phosUV.x *= uScreenAspect;
     phosUV -= uPan;
@@ -137,48 +150,63 @@ void main() {
         return;
     }
 
-    // --- Cell coordinate ---
+    vec3 cellColor = texture(uPhosphor, phosUV).rgb;
+
+    // Mask LOD: blend between full mask and zoomed-out tint
+    float pixelsPerCell = (uScreenHeight / uPhosphorRes.y) * uZoom;
+    float maskLOD = smoothstep(uMaskLODStart, uMaskLODEnd, pixelsPerCell);
+
+    // Zoomed-out CRT tint: subtle per-cell color and inter-cell dimming
+    // This keeps some CRT character even when cells are sub-pixel
     vec2 cellCoord = phosUV * uPhosphorRes;
     vec2 cellFrac  = fract(cellCoord);
 
-    // --- Sub-pixel mask: super-gaussian R/G/B phosphor bars ---
-    // sigmaX = bar half-width, sigmaY = bar half-height
-    // The super-gaussian gives a flat bright center with steep falloff at edges,
-    // and its tails naturally provide glow that fills gaps between bars.
-    float sigmaX = 0.135;
-    float sigmaY = 0.45;
+    // Inter-cell gap dimming (visible at all zoom levels)
+    float gapX = smoothstep(0.0, 0.05, cellFrac.x) * smoothstep(1.0, 0.95, cellFrac.x);
+    float gapY = smoothstep(0.0, 0.05, cellFrac.y) * smoothstep(1.0, 0.95, cellFrac.y);
+    float cellGap = mix(1.0, gapX * gapY, 0.15 * (1.0 - maskLOD));
 
-    // 3x3 neighborhood so glow tails bleed across cell boundaries
-    vec3 color = vec3(0.0);
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            vec2 nCoord = cellCoord + vec2(float(dx), float(dy));
-            vec2 nUV = nCoord / uPhosphorRes;
-            nUV = clamp(nUV, vec2(0.0), vec2(1.0));
-            vec3 nColor = texture(uPhosphor, nUV).rgb;
+    // Subtle RGB fringing when zoomed out (approximates unresolved phosphor triad)
+    float fx = cellFrac.x;
+    vec3 tintWeights = vec3(
+        smoothstep(0.5, 0.0, abs(fx - 0.167)),
+        smoothstep(0.5, 0.0, abs(fx - 0.500)),
+        smoothstep(0.5, 0.0, abs(fx - 0.833))
+    );
+    tintWeights = mix(vec3(1.0), tintWeights * 2.5, 0.12 * (1.0 - maskLOD));
+    vec3 tintedColor = cellColor * tintWeights * cellGap;
 
-            // Our position relative to the neighbor cell
-            vec2 f = cellFrac - vec2(float(dx), float(dy));
+    vec3 color;
 
-            // Vertical envelope (shared by all 3 sub-pixels)
-            float vBar = supergauss(f.y, 0.5, sigmaY);
+    if (maskLOD > 0.01) {
+        // Full phosphor mask: single-cell sample (no neighborhood loop)
+        float sigmaX = 0.135;
+        float sigmaY = 0.45;
 
-            // R at 1/6, G at 3/6, B at 5/6 of cell width
-            float pr = supergauss(f.x, 0.167, sigmaX) * vBar;
-            float pg = supergauss(f.x, 0.500, sigmaX) * vBar;
-            float pb = supergauss(f.x, 0.833, sigmaX) * vBar;
+        float vBar = core(abs(cellFrac.y - 0.5), sigmaY);
+        float pr = core(abs(cellFrac.x - 0.167), sigmaX) * vBar;
+        float pg = core(abs(cellFrac.x - 0.500), sigmaX) * vBar;
+        float pb = core(abs(cellFrac.x - 0.833), sigmaX) * vBar;
 
-            color += nColor * vec3(pr, pg, pb);
-        }
+        vec3 maskedColor = cellColor * vec3(pr, pg, pb);
+
+        // Scanline: dark line at row boundaries
+        float edgeDist = min(cellFrac.y, 1.0 - cellFrac.y);
+        float scanline = smoothstep(0.0, 0.08, edgeDist);
+        maskedColor *= mix(1.0, scanline, uScanlineStr);
+
+        color = mix(tintedColor, maskedColor, maskLOD);
+    } else {
+        color = tintedColor;
     }
 
-    // --- Bloom ---
+    // Bloom
     vec3 bloom = texture(uBloomCoreTex, phosUV).rgb * uBloomCoreW
                + texture(uBloomMidTex,  phosUV).rgb * uBloomMidW
                + texture(uBloomHaloTex, phosUV).rgb * uBloomHaloW;
-    color += bloom;
+    color += bloom * uBloomStrength;
 
-    // --- Energy clipping: bright phosphors blow out toward white ---
+    // Energy clipping: bright phosphors blow out toward white
     float lumaOut = dot(color, vec3(0.299, 0.587, 0.114));
     color = mix(color, vec3(lumaOut), pow(clamp(lumaOut, 0.0, 1.0), uClipExp));
 
@@ -199,13 +227,19 @@ class VirtualCathode {
         this.settings = {
             zoom: 1.0,
             pan: { x: 0.0, y: 0.0 },
-            slotExponent: 6.0,
+            focus: 0.4,
+            slotExponent: 8.0,
+            scanlineStr: 0.3,
             persistence: 0.85,
+            bloomThreshold: 0.15,
+            bloomStrength: 2.5,
             bloomCore: 0.06,
             bloomMid: 0.03,
             bloomHalo: 0.015,
             clipExponent: 3.0,
             curvature: 0.02,
+            maskLODStart: 3.0,
+            maskLODEnd: 6.0,
         };
 
         this._init();
@@ -227,22 +261,25 @@ class VirtualCathode {
         // Source texture (re-uploaded each frame from 2D canvas)
         this.sourceTex = this._createTex(1024, 1024, false, false);
 
-        // Phosphor FBOs (ping-pong, NEAREST, sized to maskScale)
+        // Phosphor FBOs (ping-pong, NEAREST, 1:1 with source)
         this._buildPhosphorFBOs();
 
-        // Bloom FBOs (fixed sizes)
-        this.bloomCore = [this._createFBO(512, 512, false), this._createFBO(512, 512, false)];
-        this.bloomMid  = [this._createFBO(256, 256, false), this._createFBO(256, 256, false)];
-        this.bloomHalo = [this._createFBO(128, 128, false), this._createFBO(128, 128, false)];
+        // Bloom extract FBO (512x512, LINEAR)
+        this.bloomExtractFBO = this._createFBO(512, 512, false);
+
+        // Bloom FBOs (fixed sizes, ping-pong pairs)
+        this.bloomCoreFBOs = [this._createFBO(512, 512, false), this._createFBO(512, 512, false)];
+        this.bloomMidFBOs  = [this._createFBO(256, 256, false), this._createFBO(256, 256, false)];
+        this.bloomHaloFBOs = [this._createFBO(128, 128, false), this._createFBO(128, 128, false)];
 
         // Compile programs
         this.progResolve   = this._compile(VERT, FRAG_PHOSPHOR_RESOLVE);
+        this.progExtract   = this._compile(VERT, FRAG_BLOOM_EXTRACT);
         this.progBlur      = this._compile(VERT, FRAG_BLUR);
-        this.progComposite    = this._compile(VERT, FRAG_COMPOSITE);
+        this.progComposite = this._compile(VERT, FRAG_COMPOSITE);
 
         // Cache uniform locations
         this._cacheUniforms();
-
     }
 
     _cacheUniforms() {
@@ -252,9 +289,18 @@ class VirtualCathode {
         // Resolve pass
         const r = this.progResolve;
         this.uR = {
-            source:  loc(r, 'uSource'),
-            prev:    loc(r, 'uPrev'),
-            persist: loc(r, 'uPersist'),
+            source:      loc(r, 'uSource'),
+            prev:        loc(r, 'uPrev'),
+            persist:     loc(r, 'uPersist'),
+            focus:       loc(r, 'uFocus'),
+            sourceTexel: loc(r, 'uSourceTexel'),
+        };
+
+        // Extract pass
+        const e = this.progExtract;
+        this.uE = {
+            input:     loc(e, 'uInput'),
+            threshold: loc(e, 'uThreshold'),
         };
 
         // Blur pass
@@ -267,20 +313,25 @@ class VirtualCathode {
         // Composite pass
         const c = this.progComposite;
         this.uC = {
-            phosphor:     loc(c, 'uPhosphor'),
-            bloomCore:    loc(c, 'uBloomCoreTex'),
-            bloomMid:     loc(c, 'uBloomMidTex'),
-            bloomHalo:    loc(c, 'uBloomHaloTex'),
-            zoom:         loc(c, 'uZoom'),
-            pan:          loc(c, 'uPan'),
-            curvature:    loc(c, 'uCurvature'),
-            slotExponent: loc(c, 'uSlotExponent'),
-            clipExp:      loc(c, 'uClipExp'),
-            bloomCoreW:   loc(c, 'uBloomCoreW'),
-            bloomMidW:    loc(c, 'uBloomMidW'),
-            bloomHaloW:   loc(c, 'uBloomHaloW'),
-            phosphorRes:  loc(c, 'uPhosphorRes'),
-            screenAspect: loc(c, 'uScreenAspect'),
+            phosphor:      loc(c, 'uPhosphor'),
+            bloomCore:     loc(c, 'uBloomCoreTex'),
+            bloomMid:      loc(c, 'uBloomMidTex'),
+            bloomHalo:     loc(c, 'uBloomHaloTex'),
+            zoom:          loc(c, 'uZoom'),
+            pan:           loc(c, 'uPan'),
+            curvature:     loc(c, 'uCurvature'),
+            slotExponent:  loc(c, 'uSlotExponent'),
+            scanlineStr:   loc(c, 'uScanlineStr'),
+            clipExp:       loc(c, 'uClipExp'),
+            bloomCoreW:    loc(c, 'uBloomCoreW'),
+            bloomMidW:     loc(c, 'uBloomMidW'),
+            bloomHaloW:    loc(c, 'uBloomHaloW'),
+            bloomStrength: loc(c, 'uBloomStrength'),
+            phosphorRes:   loc(c, 'uPhosphorRes'),
+            screenAspect:  loc(c, 'uScreenAspect'),
+            screenHeight:  loc(c, 'uScreenHeight'),
+            maskLODStart:  loc(c, 'uMaskLODStart'),
+            maskLODEnd:    loc(c, 'uMaskLODEnd'),
         };
     }
 
@@ -289,7 +340,6 @@ class VirtualCathode {
         const pw = this.source.width;
         const ph = this.source.height;
 
-        // Destroy old FBOs if they exist
         if (this.phosA) {
             gl.deleteTexture(this.phosA.tex);
             gl.deleteFramebuffer(this.phosA.fb);
@@ -297,12 +347,11 @@ class VirtualCathode {
             gl.deleteFramebuffer(this.phosB.fb);
         }
 
-        this.phosA = this._createFBO(pw, ph, true);  // NEAREST
+        this.phosA = this._createFBO(pw, ph, true);   // NEAREST
         this.phosB = this._createFBO(pw, ph, true);   // NEAREST
         this.phosW = pw;
         this.phosH = ph;
 
-        // Clear both to black
         for (const fbo of [this.phosA, this.phosB]) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fb);
             gl.viewport(0, 0, pw, ph);
@@ -316,19 +365,18 @@ class VirtualCathode {
     }
 
     // ----------------------------------------------------------
-    //  Render — called once per animation frame
+    //  Render
     // ----------------------------------------------------------
     render(time) {
         const gl = this.gl;
         const s = this.settings;
-
 
         // Upload source canvas to texture
         gl.bindTexture(gl.TEXTURE_2D, this.sourceTex);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,
                       gl.UNSIGNED_BYTE, this.source);
 
-        // Rebuild phosphor FBOs if maskScale or cellAspect changed
+        // Rebuild phosphor FBOs if source size changed
         const msKey = `${this.source.width}_${this.source.height}`;
         if (msKey !== this._lastMsKey) {
             this._buildPhosphorFBOs();
@@ -336,7 +384,6 @@ class VirtualCathode {
         }
 
         // ---- Pass 1: Phosphor Resolve + Persistence ----
-        // Writes to currPhos. Reads source + prevPhos.
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.currPhos.fb);
         gl.viewport(0, 0, this.phosW, this.phosH);
         gl.useProgram(this.progResolve);
@@ -344,6 +391,8 @@ class VirtualCathode {
         gl.uniform1i(this.uR.source, 0);
         gl.uniform1i(this.uR.prev, 1);
         gl.uniform1f(this.uR.persist, s.persistence);
+        gl.uniform1f(this.uR.focus, s.focus);
+        gl.uniform2f(this.uR.sourceTexel, 1.0 / this.source.width, 1.0 / this.source.height);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.sourceTex);
@@ -352,16 +401,27 @@ class VirtualCathode {
 
         this._drawQuad(this.progResolve);
 
-        // currPhos now has the persisted phosphor data for this frame.
+        // ---- Pass 2: Bloom Extract (threshold) ----
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomExtractFBO.fb);
+        gl.viewport(0, 0, 512, 512);
+        gl.useProgram(this.progExtract);
 
-        // ---- Pass 2: Bloom (3 scales, separable H+V blur) ----
+        gl.uniform1i(this.uE.input, 0);
+        gl.uniform1f(this.uE.threshold, s.bloomThreshold);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.currPhos.tex);
+
+        this._drawQuad(this.progExtract);
+
+        // ---- Pass 3: Bloom Blur (3 scales from extracted source) ----
         gl.useProgram(this.progBlur);
 
-        this._blurScale(this.bloomCore, 512, 1);
-        this._blurScale(this.bloomMid,  256, 2);
-        this._blurScale(this.bloomHalo, 128, 2);
+        this._blurScale(this.bloomCoreFBOs, 512, 1, this.bloomExtractFBO.tex);
+        this._blurScale(this.bloomMidFBOs,  256, 2, this.bloomExtractFBO.tex);
+        this._blurScale(this.bloomHaloFBOs, 128, 2, this.bloomExtractFBO.tex);
 
-        // ---- Pass 3: Screen Composite ----
+        // ---- Pass 4: Screen Composite ----
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, this.canvas.width, this.canvas.height);
         gl.useProgram(this.progComposite);
@@ -375,49 +435,48 @@ class VirtualCathode {
         gl.uniform2f(this.uC.pan, s.pan.x, s.pan.y);
         gl.uniform1f(this.uC.curvature, s.curvature);
         gl.uniform1f(this.uC.slotExponent, s.slotExponent);
+        gl.uniform1f(this.uC.scanlineStr, s.scanlineStr);
         gl.uniform1f(this.uC.clipExp, s.clipExponent);
         gl.uniform1f(this.uC.bloomCoreW, s.bloomCore);
         gl.uniform1f(this.uC.bloomMidW, s.bloomMid);
         gl.uniform1f(this.uC.bloomHaloW, s.bloomHalo);
+        gl.uniform1f(this.uC.bloomStrength, s.bloomStrength);
         gl.uniform2f(this.uC.phosphorRes, this.phosW, this.phosH);
         gl.uniform1f(this.uC.screenAspect, this.canvas.width / this.canvas.height);
+        gl.uniform1f(this.uC.screenHeight, this.canvas.height);
+        gl.uniform1f(this.uC.maskLODStart, s.maskLODStart);
+        gl.uniform1f(this.uC.maskLODEnd, s.maskLODEnd);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.currPhos.tex);
         gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloomCore[0].tex);
+        gl.bindTexture(gl.TEXTURE_2D, this.bloomCoreFBOs[0].tex);
         gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloomMid[0].tex);
+        gl.bindTexture(gl.TEXTURE_2D, this.bloomMidFBOs[0].tex);
         gl.activeTexture(gl.TEXTURE3);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloomHalo[0].tex);
+        gl.bindTexture(gl.TEXTURE_2D, this.bloomHaloFBOs[0].tex);
 
         this._drawQuad(this.progComposite);
 
-        // ---- Swap ping-pong ----
-        // prevPhos now points to this frame's result (for next frame's persistence)
+        // Swap ping-pong
         [this.currPhos, this.prevPhos] = [this.prevPhos, this.currPhos];
     }
 
     // ----------------------------------------------------------
-    //  Bloom helper
+    //  Bloom helper: blur from a source texture into a ping-pong pair
     // ----------------------------------------------------------
-    // Blur a bloom scale: blit phosphor into fbo[0], then ping-pong
-    // H/V separable gaussian passes for `iterations` rounds.
-    _blurScale(fboPair, size, iterations) {
+    _blurScale(fboPair, size, iterations, sourceTex) {
         const gl = this.gl;
         const tx = 1.0 / size;
 
-        // Step 1: Blit (downsample) currPhos → fboPair[0]
-        // We reuse the blur shader with direction=0 as a passthrough isn't needed;
-        // instead just do one H pass directly from phosphor source.
         gl.uniform1i(this.uB.input, 0);
         gl.activeTexture(gl.TEXTURE0);
 
-        // First H pass reads from thresholded bloom extract
+        // First H pass reads from sourceTex
         gl.bindFramebuffer(gl.FRAMEBUFFER, fboPair[1].fb);
         gl.viewport(0, 0, size, size);
         gl.uniform2f(this.uB.direction, tx, 0.0);
-        gl.bindTexture(gl.TEXTURE_2D, this.currPhos.tex);
+        gl.bindTexture(gl.TEXTURE_2D, sourceTex);
         this._drawQuad(this.progBlur);
 
         // First V pass
@@ -426,21 +485,19 @@ class VirtualCathode {
         gl.bindTexture(gl.TEXTURE_2D, fboPair[1].tex);
         this._drawQuad(this.progBlur);
 
-        // Additional iterations ping-pong between [0] and [1]
+        // Additional iterations ping-pong
         for (let i = 1; i < iterations; i++) {
-            // H pass: read [0] → write [1]
             gl.bindFramebuffer(gl.FRAMEBUFFER, fboPair[1].fb);
             gl.uniform2f(this.uB.direction, tx, 0.0);
             gl.bindTexture(gl.TEXTURE_2D, fboPair[0].tex);
             this._drawQuad(this.progBlur);
 
-            // V pass: read [1] → write [0]
             gl.bindFramebuffer(gl.FRAMEBUFFER, fboPair[0].fb);
             gl.uniform2f(this.uB.direction, 0.0, tx);
             gl.bindTexture(gl.TEXTURE_2D, fboPair[1].tex);
             this._drawQuad(this.progBlur);
         }
-        // Result always ends up in fboPair[0]
+        // Result in fboPair[0]
     }
 
     // ----------------------------------------------------------

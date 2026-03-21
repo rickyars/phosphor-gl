@@ -61,15 +61,23 @@
         // === TWEAKPANE ===
         const pane = new Tweakpane.Pane({ title: 'Virtual Cathode' });
         const s = monitor.settings;
+        pane.addInput(s, 'focus',        { min: 0, max: 1.0, step: 0.05, label: 'Focus' });
         pane.addInput(s, 'slotExponent', { min: 2.0, max: 12.0, step: 0.5, label: 'Slot Exponent' });
-        pane.addInput(s, 'persistence', { min: 0, max: 0.98 });
-        pane.addInput(s, 'clipExponent',{ min: 0.5, max: 10, label: 'Clip Exp' });
-        pane.addInput(s, 'curvature',   { min: 0, max: 0.1 });
+        pane.addInput(s, 'scanlineStr',  { min: 0, max: 1.0, step: 0.05, label: 'Scanline' });
+        pane.addInput(s, 'persistence',  { min: 0, max: 0.98 });
+        pane.addInput(s, 'clipExponent', { min: 0.5, max: 10, label: 'Clip Exp' });
+        pane.addInput(s, 'curvature',    { min: 0, max: 0.1 });
 
         const fBloom = pane.addFolder({ title: 'Bloom' });
+        fBloom.addInput(s, 'bloomStrength',  { min: 0, max: 10, step: 0.1, label: 'Strength' });
+        fBloom.addInput(s, 'bloomThreshold', { min: 0, max: 1, step: 0.01, label: 'Threshold' });
         fBloom.addInput(s, 'bloomCore', { min: 0, max: 1, label: 'Core' });
         fBloom.addInput(s, 'bloomMid',  { min: 0, max: 1, label: 'Mid' });
         fBloom.addInput(s, 'bloomHalo', { min: 0, max: 1, label: 'Halo' });
+
+        const fLOD = pane.addFolder({ title: 'Mask LOD' });
+        fLOD.addInput(s, 'maskLODStart', { min: 1.0, max: 10.0, step: 0.5, label: 'Start (px/cell)' });
+        fLOD.addInput(s, 'maskLODEnd',   { min: 2.0, max: 20.0, step: 0.5, label: 'End (px/cell)' });
 
         // === STATIC TEST CARD ===
         // Drawn once — no animation needed for verifying phosphor behavior.
