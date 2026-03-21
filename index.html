@@ -2,223 +2,80 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Virtual Cathode</title>
+    <title>Physical CRT Simulator</title>
     <style>
-        body { margin: 0; background: #000; overflow: hidden; }
-        #crt-canvas { width: 100vw; height: 100vh; cursor: crosshair; }
+        body { margin: 0; background: #000; overflow: hidden; color: #0f0; font-family: monospace; }
+        #crt-canvas { width: 100vw; height: 100vh; display: block; cursor: crosshair; }
+        .tp-dfwv { z-index: 100 !important; }
     </style>
 </head>
 <body>
-
     <canvas id="crt-canvas"></canvas>
     <canvas id="source-buffer" width="1024" height="1024" style="display:none;"></canvas>
 
     <script src="https://cdn.jsdelivr.net/npm/tweakpane@3.1.0/dist/tweakpane.min.js"></script>
-    <script src="VirtualCathode.js"></script>
-
+    <script src="PhysicalCRT.js"></script>
     <script>
-        const sourceCanvas = document.getElementById('source-buffer');
-        const ctx = sourceCanvas.getContext('2d');
-        const outputCanvas = document.getElementById('crt-canvas');
-        outputCanvas.width = window.innerWidth;
-        outputCanvas.height = window.innerHeight;
+        window.addEventListener('load', () => {
+            const sourceCanvas = document.getElementById('source-buffer');
+            const ctx = sourceCanvas.getContext('2d');
+            const outputCanvas = document.getElementById('crt-canvas');
+            const dpr = window.devicePixelRatio || 1;
+            outputCanvas.width = window.innerWidth * dpr;
+            outputCanvas.height = window.innerHeight * dpr;
 
-        const monitor = new VirtualCathode(sourceCanvas, outputCanvas);
+            const crt = new PhysicalCRT(sourceCanvas, outputCanvas);
+            const pane = new Tweakpane.Pane();
+            pane.addInput(crt.settings, 'maskStren', { min: 0, max: 1 });
+            pane.addInput(crt.settings, 'maskBlur', { min: 0, max: 1, label: 'Beam Focus' });
+            pane.addInput(crt.settings, 'convergence', { min: 0, max: 5 });
+            pane.addInput(crt.settings, 'scanline', { min: 0, max: 1 });
 
-        // === INTERACTION: left-drag or right-drag = pan, scroll = zoom ===
-        let isPanning = false;
-        let lastMouse = { x: 0, y: 0 };
+            let isPanning = false;
+            let lastMouse = { x: 0, y: 0 };
 
-        window.addEventListener('mousedown', e => {
-            // Pan on left-click (button 0) or right-click (button 2)
-            // Ignore if clicking on Tweakpane
-            if (e.target.closest('.tp-dfwv')) return;
-            if (e.button === 0 || e.button === 2) {
-                isPanning = true;
+            window.addEventListener('mousedown', e => { 
+                if (e.target.closest('.tp-dfwv')) return;
+                isPanning = true; 
+                lastMouse = { x: e.clientX, y: e.clientY }; 
+            });
+
+            window.addEventListener('mouseup', () => isPanning = false);
+
+            window.addEventListener('mousemove', e => {
+                if (!isPanning) return;
+                const z = crt.settings.zoom;
+                
+                // Horizontal: Subtract to move against drag
+                crt.settings.pan.x -= (e.clientX - lastMouse.x) / (outputCanvas.clientWidth * z);
+                
+                // Vertical: Add to move with drag (correcting for WebGL Y-up vs Screen Y-down)
+                crt.settings.pan.y += (e.clientY - lastMouse.y) / (outputCanvas.clientHeight * z); 
+                
                 lastMouse = { x: e.clientX, y: e.clientY };
-            }
-        });
-        window.addEventListener('contextmenu', e => {
-            if (!e.target.closest('.tp-dfwv')) e.preventDefault();
-        });
-        window.addEventListener('mouseup', () => isPanning = false);
-        window.addEventListener('mousemove', e => {
-            if (!isPanning) return;
-            const z = monitor.settings.zoom;
-            const dx = (e.clientX - lastMouse.x) / outputCanvas.width / z;
-            const dy = (e.clientY - lastMouse.y) / outputCanvas.height / z;
-            monitor.settings.pan.x += dx;
-            monitor.settings.pan.y -= dy;
-            lastMouse = { x: e.clientX, y: e.clientY };
-        });
-
-        window.addEventListener('wheel', e => {
-            const factor = e.deltaY > 0 ? 0.92 : 1.08;
-            monitor.settings.zoom = Math.max(1.0, Math.min(400.0,
-                monitor.settings.zoom * factor));
-        }, { passive: true });
-
-        // === TWEAKPANE ===
-        const pane = new Tweakpane.Pane({ title: 'Virtual Cathode' });
-        const s = monitor.settings;
-        pane.addInput(s, 'focus',        { min: 0, max: 1.0, step: 0.05, label: 'Focus' });
-        pane.addInput(s, 'slotExponent', { min: 2.0, max: 12.0, step: 0.5, label: 'Slot Exponent' });
-        pane.addInput(s, 'scanlineStr',  { min: 0, max: 1.0, step: 0.05, label: 'Scanline' });
-        pane.addInput(s, 'persistence',  { min: 0, max: 0.98 });
-        pane.addInput(s, 'clipExponent', { min: 0.5, max: 10, label: 'Clip Exp' });
-        pane.addInput(s, 'curvature',    { min: 0, max: 0.1 });
-
-        const fBloom = pane.addFolder({ title: 'Bloom' });
-        fBloom.addInput(s, 'bloomStrength',  { min: 0, max: 10, step: 0.1, label: 'Strength' });
-        fBloom.addInput(s, 'bloomThreshold', { min: 0, max: 1, step: 0.01, label: 'Threshold' });
-        fBloom.addInput(s, 'bloomCore', { min: 0, max: 1, label: 'Core' });
-        fBloom.addInput(s, 'bloomMid',  { min: 0, max: 1, label: 'Mid' });
-        fBloom.addInput(s, 'bloomHalo', { min: 0, max: 1, label: 'Halo' });
-
-        const fLOD = pane.addFolder({ title: 'Mask LOD' });
-        fLOD.addInput(s, 'maskLODStart', { min: 1.0, max: 10.0, step: 0.5, label: 'Start (px/cell)' });
-        fLOD.addInput(s, 'maskLODEnd',   { min: 2.0, max: 20.0, step: 0.5, label: 'End (px/cell)' });
-
-        // === STATIC TEST CARD ===
-        // Drawn once — no animation needed for verifying phosphor behavior.
-        // Re-drawn on each frame so persistence can be tested by toggling content.
-
-        function drawTestCard() {
-            ctx.fillStyle = '#000';
-            ctx.fillRect(0, 0, 1024, 1024);
-
-            // --- Title ---
-            ctx.font = 'bold 48px monospace';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = '#fff';
-            ctx.fillText('VIRTUAL CATHODE', 512, 64);
-
-            ctx.font = '18px monospace';
-            ctx.fillStyle = '#888';
-            ctx.fillText('PHOSPHOR EMULATION TEST CARD', 512, 94);
-
-            // --- SMPTE-style color bars ---
-            const colors = ['#fff','#ff0','#0ff','#0f0','#f0f','#f00','#00f'];
-            const barW = Math.floor(904 / colors.length);
-            colors.forEach((c, i) => {
-                ctx.fillStyle = c;
-                ctx.fillRect(60 + i * barW, 130, barW, 100);
             });
 
-            // --- Grayscale ramp ---
-            for (let x = 0; x < 904; x++) {
-                const v = Math.floor((x / 904) * 255);
-                ctx.fillStyle = `rgb(${v},${v},${v})`;
-                ctx.fillRect(60 + x, 260, 1, 40);
-            }
-            ctx.font = '12px monospace';
-            ctx.textAlign = 'left';
-            ctx.fillStyle = '#666';
-            ctx.fillText('0', 60, 315);
-            ctx.textAlign = 'right';
-            ctx.fillText('255', 964, 315);
+            window.addEventListener('wheel', e => {
+                if (e.target.closest('.tp-dfwv')) return;
+                e.preventDefault();
+                crt.settings.zoom = Math.max(0.5, Math.min(40, crt.settings.zoom - e.deltaY * 0.005));
+            }, { passive: false });
 
-            // --- Colored rectangles ---
-            const rects = [
-                { x: 60,  c: '#f00', label: 'R' },
-                { x: 230, c: '#0f0', label: 'G' },
-                { x: 400, c: '#00f', label: 'B' },
-                { x: 570, c: '#ff0', label: 'Y' },
-                { x: 740, c: '#f0f', label: 'M' },
-            ];
-            rects.forEach(r => {
-                ctx.fillStyle = r.c;
-                ctx.fillRect(r.x, 340, 150, 100);
-                ctx.font = 'bold 36px monospace';
-                ctx.textAlign = 'center';
-                ctx.fillStyle = '#000';
-                ctx.fillText(r.label, r.x + 75, 400);
+            window.addEventListener('keydown', e => {
+                if (e.key === ' ') { crt.settings.pan = {x:0, y:0}; crt.settings.zoom = 1; }
             });
 
-            // --- Fine detail text (for resolution testing) ---
-            ctx.textAlign = 'left';
-            const sizes = [24, 18, 14, 12, 10, 8];
-            let ty = 490;
-            sizes.forEach(sz => {
-                ctx.font = `${sz}px monospace`;
-                ctx.fillStyle = '#0f0';
-                ctx.fillText(`${sz}px: The quick brown fox jumps over the lazy dog`, 60, ty);
-                ty += sz + 6;
-            });
-
-            // --- Convergence crosshatch ---
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 1;
-            for (let x = 60; x <= 964; x += 50) {
-                ctx.beginPath();
-                ctx.moveTo(x, 680);
-                ctx.lineTo(x, 880);
-                ctx.stroke();
+            function loop() {
+                ctx.fillStyle = '#050505'; ctx.fillRect(0,0,1024,1024);
+                ctx.strokeStyle = '#fff'; ctx.lineWidth = 140;
+                ctx.beginPath(); ctx.arc(512,512,300,0,Math.PI*2); ctx.stroke();
+                ['#f00','#0f0','#00f','#fff'].forEach((c,i) => {
+                    ctx.fillStyle = c; ctx.fillRect(252+i*130, 680, 100, 120);
+                });
+                crt.render();
+                requestAnimationFrame(loop);
             }
-            for (let y = 680; y <= 880; y += 50) {
-                ctx.beginPath();
-                ctx.moveTo(60, y);
-                ctx.lineTo(964, y);
-                ctx.stroke();
-            }
-
-            // --- Bright/dark contrast blocks ---
-            ctx.fillStyle = '#fff';
-            ctx.fillRect(60, 910, 200, 80);
-            ctx.fillStyle = '#000';
-            ctx.font = 'bold 24px monospace';
-            ctx.textAlign = 'center';
-            ctx.fillText('WHITE', 160, 958);
-
-            ctx.fillStyle = '#111';
-            ctx.fillRect(280, 910, 200, 80);
-            ctx.fillStyle = '#888';
-            ctx.fillText('DARK', 380, 958);
-
-            ctx.fillStyle = '#0f0';
-            ctx.fillRect(500, 910, 200, 80);
-            ctx.fillStyle = '#000';
-            ctx.fillText('GREEN', 600, 958);
-
-            ctx.fillStyle = '#f00';
-            ctx.fillRect(720, 910, 200, 80);
-            ctx.fillStyle = '#fff';
-            ctx.fillText('RED', 820, 958);
-        }
-
-        // Bouncing box state
-        let ballX = 512, ballY = 750, ballVX = 3, ballVY = 2;
-
-        function drawMovingElement() {
-            const sz = 40;
-            // Bounce within a region
-            ballX += ballVX;
-            ballY += ballVY;
-            if (ballX < 60 + sz || ballX > 964 - sz) ballVX = -ballVX;
-            if (ballY < 680 + sz || ballY > 880 - sz) ballVY = -ballVY;
-
-            ctx.fillStyle = '#fff';
-            ctx.fillRect(ballX - sz/2, ballY - sz/2, sz, sz);
-
-            // Label
-            ctx.font = '10px monospace';
-            ctx.fillStyle = '#888';
-            ctx.textAlign = 'center';
-            ctx.fillText('PERSISTENCE TEST', ballX, ballY + sz/2 + 12);
-        }
-
-        // === RENDER LOOP ===
-        function animate(t) {
-            drawTestCard();       // redraw static card (clears old ball position)
-            drawMovingElement();  // draw ball at new position
-            monitor.render(t);
-            requestAnimationFrame(animate);
-        }
-        requestAnimationFrame(animate);
-
-        window.addEventListener('resize', () => {
-            outputCanvas.width = window.innerWidth;
-            outputCanvas.height = window.innerHeight;
+            loop();
         });
     </script>
 </body>

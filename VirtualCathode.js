@@ -31,22 +31,26 @@ out vec4 outColor;
 void main() {
     vec2 uv = vec2(vUV.x, 1.0 - vUV.y);
 
-    // 4-tap box filter: fatten thin strokes
-    vec2 off = uSourceTexel * 0.25;
-    vec3 newCol = (
-        texture(uSource, uv + vec2(-off.x, -off.y)).rgb +
-        texture(uSource, uv + vec2( off.x, -off.y)).rgb +
-        texture(uSource, uv + vec2(-off.x,  off.y)).rgb +
-        texture(uSource, uv + vec2( off.x,  off.y)).rgb
-    ) * 0.25;
+    // Horizontal beam spread (directional, not symmetric blur)
+    vec2 t = uSourceTexel;
+    vec3 newCol =
+        texture(uSource, uv - vec2(2.0 * t.x, 0.0)).rgb * 0.10 +
+        texture(uSource, uv - vec2(1.0 * t.x, 0.0)).rgb * 0.20 +
+        texture(uSource, uv).rgb                         * 0.40 +
+        texture(uSource, uv + vec2(1.0 * t.x, 0.0)).rgb * 0.20 +
+        texture(uSource, uv + vec2(2.0 * t.x, 0.0)).rgb * 0.10;
 
     // Horizontal sharpening: 3-tap Laplacian
     vec3 left  = texture(uSource, uv + vec2(-uSourceTexel.x, 0.0)).rgb;
     vec3 right = texture(uSource, uv + vec2( uSourceTexel.x, 0.0)).rgb;
     newCol = max(newCol + uFocus * (newCol * 2.0 - left - right), vec3(0.0));
 
+    // sRGB -> linear before persistence accumulation
+    newCol = pow(newCol, vec3(2.2));
+
+    // Energy-conserving persistence: steady state converges to newCol, not infinity
     vec3 oldCol = texture(uPrev, vUV).rgb;
-    outColor = vec4(max(oldCol * uPersist, newCol), 1.0);
+    outColor = vec4(oldCol * uPersist + newCol * (1.0 - uPersist), 1.0);
 }`;
 
 const FRAG_BLOOM_EXTRACT = `#version 300 es
@@ -61,8 +65,12 @@ out vec4 outColor;
 void main() {
     vec3 c = texture(uInput, vUV).rgb;
     float luma = dot(c, vec3(0.299, 0.587, 0.114));
-    float knee = uThreshold * 0.5;
+    // Tight knee: only content significantly above threshold blooms
+    float knee = uThreshold * 0.1;
     float w = smoothstep(uThreshold - knee, uThreshold + knee, luma);
+    // Scale by how far above threshold — brighter = more bloom
+    w *= (luma - uThreshold) / max(1.0 - uThreshold, 0.001);
+    w = max(w, 0.0);
     outColor = vec4(c * w, 1.0);
 }`;
 
@@ -108,6 +116,7 @@ uniform float uCurvature;
 uniform float uSlotExponent;
 uniform float uScanlineStr;
 uniform float uClipExp;
+uniform float uExposure;
 uniform float uBloomCoreW;
 uniform float uBloomMidW;
 uniform float uBloomHaloW;
@@ -117,14 +126,20 @@ uniform float uScreenAspect;
 uniform float uScreenHeight;
 uniform float uMaskLODStart;
 uniform float uMaskLODEnd;
+uniform float uTime;
 
 in vec2 vUV;
 out vec4 outColor;
 
-// Super-gaussian phosphor bar shape
-float core(float d, float sigma) {
+// Phosphor core: super-gaussian, exponent is luma-dependent
+float phosphorCore(float d, float sigma, float exponent) {
     float n = d / sigma;
-    return exp(-pow(abs(n), uSlotExponent));
+    return exp(-pow(abs(n), exponent));
+}
+
+// Light leakage: Lorentzian — physically models glow through CRT glass
+float phosphorHalo(float d, float radius) {
+    return 1.0 / (1.0 + pow(d / radius, 2.0));
 }
 
 void main() {
@@ -159,7 +174,8 @@ void main() {
     // Zoomed-out CRT tint: subtle per-cell color and inter-cell dimming
     // This keeps some CRT character even when cells are sub-pixel
     vec2 cellCoord = phosUV * uPhosphorRes;
-    vec2 cellFrac  = fract(cellCoord);
+    vec2 cellBase  = floor(cellCoord);
+    vec2 cellFrac  = cellCoord - cellBase;
 
     // Inter-cell gap dimming (visible at all zoom levels)
     float gapX = smoothstep(0.0, 0.05, cellFrac.x) * smoothstep(1.0, 0.95, cellFrac.x);
@@ -179,37 +195,93 @@ void main() {
     vec3 color;
 
     if (maskLOD > 0.01) {
-        // Full phosphor mask: single-cell sample (no neighborhood loop)
-        float sigmaX = 0.135;
-        float sigmaY = 0.45;
+        // Shared energy field: beam energy excites ALL phosphors
+        float energy = dot(cellColor, vec3(0.299, 0.587, 0.114));
 
-        float vBar = core(abs(cellFrac.y - 0.5), sigmaY);
-        float pr = core(abs(cellFrac.x - 0.167), sigmaX) * vBar;
-        float pg = core(abs(cellFrac.x - 0.500), sigmaX) * vBar;
-        float pb = core(abs(cellFrac.x - 0.833), sigmaX) * vBar;
+        // Dynamic slot exponent: bright areas soften, dark areas stay sharp
+        float dynamicExp = mix(uSlotExponent, 2.0, energy);
 
-        vec3 maskedColor = cellColor * vec3(pr, pg, pb);
+        // Beam blooming: bright phosphors physically expand
+        float baseSigmaX = 0.18;
+        float baseSigmaY = 0.55;
+        float sigmaX = baseSigmaX * (1.0 + energy * 0.25);
+        float sigmaY = baseSigmaY * (1.0 + energy * 0.25);
 
-        // Scanline: dark line at row boundaries
+        // Positional jitter: break perfect vertical alignment
+        cellFrac.x += sin(cellCoord.y * 3.1415) * 0.002;
+
+        // Vertical bar shape
+        float vCore = phosphorCore(abs(cellFrac.y - 0.5), sigmaY, dynamicExp);
+
+        // Sub-pixel slot positions
+        float posR = 0.167, posG = 0.500, posB = 0.833;
+
+        // Sample all neighbors: left, right, top, bottom
+        float texelX = 1.0 / uPhosphorRes.x;
+        float texelY = 1.0 / uPhosphorRes.y;
+        vec3 leftCell  = texture(uPhosphor, phosUV - vec2(texelX, 0.0)).rgb;
+        vec3 rightCell = texture(uPhosphor, phosUV + vec2(texelX, 0.0)).rgb;
+        vec3 topCell   = texture(uPhosphor, phosUV - vec2(0.0, texelY)).rgb;
+        vec3 botCell   = texture(uPhosphor, phosUV + vec2(0.0, texelY)).rgb;
+
+        // Horizontal core weights (same for all rows at this column)
+        vec3 hCur = vec3(
+            phosphorCore(abs(cellFrac.x - posR), sigmaX, dynamicExp),
+            phosphorCore(abs(cellFrac.x - posG), sigmaX, dynamicExp),
+            phosphorCore(abs(cellFrac.x - posB), sigmaX, dynamicExp)
+        );
+        vec3 hLeft = vec3(
+            phosphorCore(cellFrac.x + 0.833, sigmaX, dynamicExp),
+            phosphorCore(cellFrac.x + 0.500, sigmaX, dynamicExp),
+            phosphorCore(cellFrac.x + 0.167, sigmaX, dynamicExp)
+        );
+        vec3 hRight = vec3(
+            phosphorCore(abs(cellFrac.x - 1.167), sigmaX, dynamicExp),
+            phosphorCore(abs(cellFrac.x - 1.500), sigmaX, dynamicExp),
+            phosphorCore(abs(cellFrac.x - 1.833), sigmaX, dynamicExp)
+        );
+
+        // Vertical core weights: current row, top row, bottom row
+        float vCur = phosphorCore(abs(cellFrac.y - 0.5), sigmaY, dynamicExp);
+        float vTop = phosphorCore(cellFrac.y + 0.5, sigmaY, dynamicExp);
+        float vBot = phosphorCore(1.0 - cellFrac.y + 0.5, sigmaY, dynamicExp);
+
+        // Sum all emitter contributions
+        // Current row: 3 cells (left, center, right)
+        vec3 result = (cellColor * hCur + leftCell * hLeft + rightCell * hRight) * vCur;
+        // Top row: center column (horizontal neighbors are 2nd order)
+        result += topCell * hCur * vTop;
+        // Bottom row: center column
+        result += botCell * hCur * vBot;
+
+        vec3 maskedColor = result;
+
+        // Luma-dependent scanline: bright areas punch through the gaps
+        float dynamicStr = uScanlineStr * (1.0 - pow(energy, 0.5));
         float edgeDist = min(cellFrac.y, 1.0 - cellFrac.y);
-        float scanline = smoothstep(0.0, 0.08, edgeDist);
-        maskedColor *= mix(1.0, scanline, uScanlineStr);
+        float scanline = smoothstep(0.0, 0.1, edgeDist);
+        maskedColor *= mix(1.0, scanline, dynamicStr);
 
         color = mix(tintedColor, maskedColor, maskLOD);
     } else {
         color = tintedColor;
     }
 
-    // Bloom
+    // Bloom: modulate by existing color to preserve chromaticity (no white fog)
     vec3 bloom = texture(uBloomCoreTex, phosUV).rgb * uBloomCoreW
                + texture(uBloomMidTex,  phosUV).rgb * uBloomMidW
                + texture(uBloomHaloTex, phosUV).rgb * uBloomHaloW;
-    color += bloom * uBloomStrength;
+    color += bloom * sqrt(max(color, vec3(0.0))) * uBloomStrength;
 
-    // Energy clipping: bright phosphors blow out toward white
-    float lumaOut = dot(color, vec3(0.299, 0.587, 0.114));
-    color = mix(color, vec3(lumaOut), pow(clamp(lumaOut, 0.0, 1.0), uClipExp));
+    // White-hot clipping: exposure + power curve crushes highlights to solid white
+    color = pow(color * uExposure, vec3(uClipExp));
+    color = clamp(color, 0.0, 1.0);
 
+    // CRT flicker
+    color *= 1.0 + 0.005 * sin(uTime * 60.0 * 6.28);
+
+    // Linear -> sRGB for display
+    color = pow(color, vec3(1.0 / 2.2));
     outColor = vec4(color, 1.0);
 }`;
 
@@ -228,15 +300,16 @@ class VirtualCathode {
             zoom: 1.0,
             pan: { x: 0.0, y: 0.0 },
             focus: 0.4,
-            slotExponent: 8.0,
+            slotExponent: 2.5,
             scanlineStr: 0.3,
             persistence: 0.85,
-            bloomThreshold: 0.15,
-            bloomStrength: 2.5,
-            bloomCore: 0.06,
-            bloomMid: 0.03,
-            bloomHalo: 0.015,
-            clipExponent: 3.0,
+            bloomThreshold: 0.4,
+            bloomStrength: 1.2,
+            bloomCore: 0.04,
+            bloomMid: 0.02,
+            bloomHalo: 0.01,
+            exposure: 1.0,
+            clipExponent: 0.8,
             curvature: 0.02,
             maskLODStart: 3.0,
             maskLODEnd: 6.0,
@@ -332,6 +405,8 @@ class VirtualCathode {
             screenHeight:  loc(c, 'uScreenHeight'),
             maskLODStart:  loc(c, 'uMaskLODStart'),
             maskLODEnd:    loc(c, 'uMaskLODEnd'),
+            exposure:      loc(c, 'uExposure'),
+            time:          loc(c, 'uTime'),
         };
     }
 
@@ -446,6 +521,8 @@ class VirtualCathode {
         gl.uniform1f(this.uC.screenHeight, this.canvas.height);
         gl.uniform1f(this.uC.maskLODStart, s.maskLODStart);
         gl.uniform1f(this.uC.maskLODEnd, s.maskLODEnd);
+        gl.uniform1f(this.uC.exposure, s.exposure);
+        gl.uniform1f(this.uC.time, time * 0.001);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.currPhos.tex);
@@ -472,10 +549,13 @@ class VirtualCathode {
         gl.uniform1i(this.uB.input, 0);
         gl.activeTexture(gl.TEXTURE0);
 
+        // H pass: 20% wider to simulate horizontal beam travel
+        const hx = tx * 1.2;
+
         // First H pass reads from sourceTex
         gl.bindFramebuffer(gl.FRAMEBUFFER, fboPair[1].fb);
         gl.viewport(0, 0, size, size);
-        gl.uniform2f(this.uB.direction, tx, 0.0);
+        gl.uniform2f(this.uB.direction, hx, 0.0);
         gl.bindTexture(gl.TEXTURE_2D, sourceTex);
         this._drawQuad(this.progBlur);
 
@@ -488,7 +568,7 @@ class VirtualCathode {
         // Additional iterations ping-pong
         for (let i = 1; i < iterations; i++) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, fboPair[1].fb);
-            gl.uniform2f(this.uB.direction, tx, 0.0);
+            gl.uniform2f(this.uB.direction, hx, 0.0);
             gl.bindTexture(gl.TEXTURE_2D, fboPair[0].tex);
             this._drawQuad(this.progBlur);
 
