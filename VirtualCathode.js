@@ -129,21 +129,40 @@ void main() {
     // --- Phosphor cell position ---
     vec2 cellCoord = phosUV * uPhosphorRes;   // position in cell units
     vec2 cellFrac  = fract(cellCoord);         // 0–1 within the cell
+    vec2 cellIndex = floor(cellCoord);         // integer cell ID
+    vec2 texelSize = 1.0 / uPhosphorRes;      // one cell in UV space
 
-    // Read cell color (NEAREST filtering → whole cell = one solid color)
-    vec3 cellColor = texture(uPhosphor, phosUV).rgb;
+    // --- Gaussian sub-pixel mask with neighbor bleeding ---
+    // Each phosphor dot's glow extends beyond its cell boundary.
+    // Sample a 3x3 neighborhood: for each neighbor, its R/G/B dots
+    // contribute gaussian tails at our pixel position.
+    vec3 color = vec3(0.0);
 
-    // --- Gaussian sub-pixel mask ---
-    float luma = dot(cellColor, vec3(0.299, 0.587, 0.114));
-    float sigma = uDotSoftness + luma * 0.03;  // brighter → wider beam
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            vec2 neighborIdx = cellIndex + vec2(float(dx), float(dy));
+            vec2 neighborUV  = (neighborIdx + 0.5) * texelSize;
 
-    float pr   = gauss(cellFrac.x, 0.167, sigma);
-    float pg   = gauss(cellFrac.x, 0.500, sigma);
-    float pb   = gauss(cellFrac.x, 0.833, sigma);
-    float slot = gauss(cellFrac.y, 0.5,   sigma * 2.5);
+            // Skip out-of-bounds neighbors
+            if (neighborUV.x < 0.0 || neighborUV.x > 1.0 ||
+                neighborUV.y < 0.0 || neighborUV.y > 1.0) continue;
 
-    vec3 mask = vec3(pr, pg, pb) * slot;
-    vec3 color = cellColor * mask;
+            vec3 nColor = texture(uPhosphor, neighborUV).rgb;
+            float nLuma = dot(nColor, vec3(0.299, 0.587, 0.114));
+            float sigma = uDotSoftness + nLuma * 0.03;
+
+            // Our position relative to this neighbor's cell origin
+            float fx = cellFrac.x - float(dx);
+            float fy = cellFrac.y - float(dy);
+
+            float pr   = gauss(fx, 0.167, sigma);
+            float pg   = gauss(fx, 0.500, sigma);
+            float pb   = gauss(fx, 0.833, sigma);
+            float slot = gauss(fy, 0.5,   sigma * 2.5);
+
+            color += nColor * vec3(pr, pg, pb) * slot;
+        }
+    }
 
     // --- Bloom (smooth, in phosphor space) ---
     vec3 bloom = texture(uBloomCoreTex, phosUV).rgb * uBloomCoreW

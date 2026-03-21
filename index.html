@@ -25,22 +25,28 @@
 
         const monitor = new VirtualCathode(sourceCanvas, outputCanvas);
 
-        // === INTERACTION: scroll=zoom, right-drag=pan ===
+        // === INTERACTION: left-drag or right-drag = pan, scroll = zoom ===
         let isPanning = false;
         let lastMouse = { x: 0, y: 0 };
 
-        outputCanvas.addEventListener('mousedown', e => {
-            if (e.button === 2) {
+        window.addEventListener('mousedown', e => {
+            // Pan on left-click (button 0) or right-click (button 2)
+            // Ignore if clicking on Tweakpane
+            if (e.target.closest('.tp-dfwv')) return;
+            if (e.button === 0 || e.button === 2) {
                 isPanning = true;
                 lastMouse = { x: e.clientX, y: e.clientY };
             }
         });
-        outputCanvas.addEventListener('contextmenu', e => e.preventDefault());
+        window.addEventListener('contextmenu', e => {
+            if (!e.target.closest('.tp-dfwv')) e.preventDefault();
+        });
         window.addEventListener('mouseup', () => isPanning = false);
         window.addEventListener('mousemove', e => {
             if (!isPanning) return;
-            const dx = (e.clientX - lastMouse.x) / outputCanvas.width;
-            const dy = (e.clientY - lastMouse.y) / outputCanvas.height;
+            const z = monitor.settings.zoom;
+            const dx = (e.clientX - lastMouse.x) / outputCanvas.width / z;
+            const dy = (e.clientY - lastMouse.y) / outputCanvas.height / z;
             monitor.settings.pan.x += dx;
             monitor.settings.pan.y -= dy;
             lastMouse = { x: e.clientX, y: e.clientY };
@@ -174,11 +180,31 @@
             ctx.fillText('RED', 820, 958);
         }
 
-        // Draw once
-        drawTestCard();
+        // Bouncing box state
+        let ballX = 512, ballY = 750, ballVX = 3, ballVY = 2;
+
+        function drawMovingElement() {
+            const sz = 40;
+            // Bounce within a region
+            ballX += ballVX;
+            ballY += ballVY;
+            if (ballX < 60 + sz || ballX > 964 - sz) ballVX = -ballVX;
+            if (ballY < 680 + sz || ballY > 880 - sz) ballVY = -ballVY;
+
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(ballX - sz/2, ballY - sz/2, sz, sz);
+
+            // Label
+            ctx.font = '10px monospace';
+            ctx.fillStyle = '#888';
+            ctx.textAlign = 'center';
+            ctx.fillText('PERSISTENCE TEST', ballX, ballY + sz/2 + 12);
+        }
 
         // === RENDER LOOP ===
         function animate(t) {
+            drawTestCard();       // redraw static card (clears old ball position)
+            drawMovingElement();  // draw ball at new position
             monitor.render(t);
             requestAnimationFrame(animate);
         }
