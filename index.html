@@ -2,80 +2,183 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Physical CRT Simulator</title>
+    <title>Physical CRT - Stability Build</title>
     <style>
-        body { margin: 0; background: #000; overflow: hidden; color: #0f0; font-family: monospace; }
-        #crt-canvas { width: 100vw; height: 100vh; display: block; cursor: crosshair; }
-        .tp-dfwv { z-index: 100 !important; }
+        body { margin: 0; background: #111; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        #crt-canvas { max-width: 100%; max-height: 100%; object-fit: contain; background: #000; cursor: grab; }
+        #crt-canvas.dragging { cursor: grabbing; }
     </style>
 </head>
 <body>
     <canvas id="crt-canvas"></canvas>
-    <canvas id="source-buffer" width="1024" height="1024" style="display:none;"></canvas>
+    <canvas id="overlay-canvas" width="800" height="800" style="display:none;"></canvas>
 
     <script src="https://cdn.jsdelivr.net/npm/tweakpane@3.1.0/dist/tweakpane.min.js"></script>
-    <script src="PhysicalCRT.js"></script>
+    <script src="ShadertoyCRT.js"></script>
     <script>
         window.addEventListener('load', () => {
-            const sourceCanvas = document.getElementById('source-buffer');
-            const ctx = sourceCanvas.getContext('2d');
             const outputCanvas = document.getElementById('crt-canvas');
-            const dpr = window.devicePixelRatio || 1;
-            outputCanvas.width = window.innerWidth * dpr;
-            outputCanvas.height = window.innerHeight * dpr;
+            const overlayCanvas = document.getElementById('overlay-canvas');
+            const overlayCtx = overlayCanvas.getContext('2d');
+            
+            // Set output display size
+            outputCanvas.width = 800;
+            outputCanvas.height = 800;
+            overlayCanvas.width = outputCanvas.width;
+            overlayCanvas.height = outputCanvas.height;
 
-            const crt = new PhysicalCRT(sourceCanvas, outputCanvas);
+            const crt = new ShadertoyCRT(overlayCanvas, outputCanvas);
+
+            const PARAMS = {
+                zoom: 1.0,
+                panX: 0.0,
+                panY: 0.0,
+                maskIntensity: 1.0,
+                maskSize: 12.0,
+                maskBorder: 0.8,
+                cellOffset: 0.5,
+                aberrationX: 2.0,
+                aberrationY: 0.0,
+                screenCurvature: 0.08,
+                screenVignette: 0.4,
+                pulseIntensity: 0.03,
+                pulseWidth: 60.0,
+                pulseRate: 20.0,
+                bloomRadius: 16.0,
+                bloomGlow: 3.0,
+                bloomBase: 0.5,
+                exposure: 1.0
+            };
+
+            crt.settings.zoom = PARAMS.zoom;
+            crt.settings.pan.x = PARAMS.panX;
+            crt.settings.pan.y = PARAMS.panY;
+            crt.settings.maskIntensity = PARAMS.maskIntensity;
+            crt.settings.maskSize = PARAMS.maskSize;
+            crt.settings.maskBorder = PARAMS.maskBorder;
+            crt.settings.cellOffset = PARAMS.cellOffset;
+            crt.settings.aberrationX = PARAMS.aberrationX;
+            crt.settings.aberrationY = PARAMS.aberrationY;
+            crt.settings.screenCurvature = PARAMS.screenCurvature;
+            crt.settings.screenVignette = PARAMS.screenVignette;
+            crt.settings.pulseIntensity = PARAMS.pulseIntensity;
+            crt.settings.pulseWidth = PARAMS.pulseWidth;
+            crt.settings.pulseRate = PARAMS.pulseRate;
+            crt.settings.bloomRadius = PARAMS.bloomRadius;
+            crt.settings.bloomGlow = PARAMS.bloomGlow;
+            crt.settings.bloomBase = PARAMS.bloomBase;
+            crt.settings.exposure = PARAMS.exposure;
+
             const pane = new Tweakpane.Pane();
-            pane.addInput(crt.settings, 'maskStren', { min: 0, max: 1 });
-            pane.addInput(crt.settings, 'maskBlur', { min: 0, max: 1, label: 'Beam Focus' });
-            pane.addInput(crt.settings, 'convergence', { min: 0, max: 5 });
-            pane.addInput(crt.settings, 'scanline', { min: 0, max: 1 });
+            const bind = (folder, key, options, setter) => {
+                folder.addInput(PARAMS, key, options).on('change', ({ value }) => setter(value));
+            };
+
+            const viewFolder = pane.addFolder({ title: 'View' });
+            bind(viewFolder, 'zoom', { min: 0.5, max: 24.0 }, (value) => crt.settings.zoom = value);
+            bind(viewFolder, 'panX', { min: -0.5, max: 0.5 }, (value) => crt.settings.pan.x = value);
+            bind(viewFolder, 'panY', { min: -0.5, max: 0.5 }, (value) => crt.settings.pan.y = value);
+            bind(viewFolder, 'screenCurvature', { min: 0.0, max: 0.2 }, (value) => crt.settings.screenCurvature = value);
+            bind(viewFolder, 'screenVignette', { min: 0.05, max: 1.0 }, (value) => crt.settings.screenVignette = value);
+
+            const bloomFolder = pane.addFolder({ title: 'Bloom' });
+            bind(bloomFolder, 'bloomRadius', { min: 0.0, max: 40.0 }, (value) => crt.settings.bloomRadius = value);
+            bind(bloomFolder, 'bloomGlow', { min: 0.0, max: 6.0 }, (value) => crt.settings.bloomGlow = value);
+            bind(bloomFolder, 'bloomBase', { min: 0.0, max: 1.0 }, (value) => crt.settings.bloomBase = value);
+
+            const maskFolder = pane.addFolder({ title: 'Mask' });
+            bind(maskFolder, 'maskIntensity', { min: 0.0, max: 1.0 }, (value) => crt.settings.maskIntensity = value);
+            bind(maskFolder, 'maskSize', { min: 2.0, max: 24.0 }, (value) => crt.settings.maskSize = value);
+            bind(maskFolder, 'maskBorder', { min: 0.0, max: 2.0 }, (value) => crt.settings.maskBorder = value);
+            bind(maskFolder, 'cellOffset', { min: 0.0, max: 1.0 }, (value) => crt.settings.cellOffset = value);
+            bind(maskFolder, 'aberrationX', { min: -8.0, max: 8.0 }, (value) => crt.settings.aberrationX = value);
+            bind(maskFolder, 'aberrationY', { min: -8.0, max: 8.0 }, (value) => crt.settings.aberrationY = value);
+
+            const toneFolder = pane.addFolder({ title: 'Tone' });
+            bind(toneFolder, 'exposure', { min: 0.1, max: 3.0 }, (value) => crt.settings.exposure = value);
+            bind(toneFolder, 'pulseIntensity', { min: 0.0, max: 0.05 }, (value) => crt.settings.pulseIntensity = value);
+            bind(toneFolder, 'pulseWidth', { min: 1.0, max: 200.0 }, (value) => crt.settings.pulseWidth = value);
+            bind(toneFolder, 'pulseRate', { min: 0.0, max: 60.0 }, (value) => crt.settings.pulseRate = value);
 
             let isPanning = false;
             let lastMouse = { x: 0, y: 0 };
+            const syncParamsFromSettings = () => {
+                PARAMS.zoom = crt.settings.zoom;
+                PARAMS.panX = crt.settings.pan.x;
+                PARAMS.panY = crt.settings.pan.y;
+                pane.refresh();
+            };
 
-            window.addEventListener('mousedown', e => { 
-                if (e.target.closest('.tp-dfwv')) return;
-                isPanning = true; 
-                lastMouse = { x: e.clientX, y: e.clientY }; 
+            outputCanvas.addEventListener('mousedown', (event) => {
+                if (event.button !== 0) return;
+                isPanning = true;
+                lastMouse = { x: event.clientX, y: event.clientY };
+                outputCanvas.classList.add('dragging');
             });
 
-            window.addEventListener('mouseup', () => isPanning = false);
+            window.addEventListener('mouseup', () => {
+                isPanning = false;
+                outputCanvas.classList.remove('dragging');
+            });
 
-            window.addEventListener('mousemove', e => {
+            window.addEventListener('mousemove', (event) => {
                 if (!isPanning) return;
-                const z = crt.settings.zoom;
-                
-                // Horizontal: Subtract to move against drag
-                crt.settings.pan.x -= (e.clientX - lastMouse.x) / (outputCanvas.clientWidth * z);
-                
-                // Vertical: Add to move with drag (correcting for WebGL Y-up vs Screen Y-down)
-                crt.settings.pan.y += (e.clientY - lastMouse.y) / (outputCanvas.clientHeight * z); 
-                
-                lastMouse = { x: e.clientX, y: e.clientY };
+                const zoom = Math.max(crt.settings.zoom, 0.001);
+                crt.settings.pan.x += (event.clientX - lastMouse.x) / (outputCanvas.clientWidth * zoom);
+                crt.settings.pan.y -= (event.clientY - lastMouse.y) / (outputCanvas.clientHeight * zoom);
+                lastMouse = { x: event.clientX, y: event.clientY };
+                syncParamsFromSettings();
             });
 
-            window.addEventListener('wheel', e => {
-                if (e.target.closest('.tp-dfwv')) return;
-                e.preventDefault();
-                crt.settings.zoom = Math.max(0.5, Math.min(40, crt.settings.zoom - e.deltaY * 0.005));
+            outputCanvas.addEventListener('wheel', (event) => {
+                event.preventDefault();
+                const rect = outputCanvas.getBoundingClientRect();
+                const uvX = (event.clientX - rect.left) / rect.width;
+                const uvY = (event.clientY - rect.top) / rect.height;
+                const anchorX = uvX - 0.5;
+                const anchorY = uvY - 0.5;
+                const oldZoom = crt.settings.zoom;
+                const zoomFactor = Math.exp(-event.deltaY * 0.0015);
+                const newZoom = Math.min(24.0, Math.max(0.5, oldZoom * zoomFactor));
+                const oldPanX = crt.settings.pan.x;
+                const oldPanY = crt.settings.pan.y;
+
+                crt.settings.pan.x = oldPanX + anchorX * (1.0 / oldZoom - 1.0 / newZoom);
+                crt.settings.pan.y = oldPanY + anchorY * (1.0 / newZoom - 1.0 / oldZoom);
+                crt.settings.zoom = newZoom;
+                syncParamsFromSettings();
             }, { passive: false });
 
-            window.addEventListener('keydown', e => {
-                if (e.key === ' ') { crt.settings.pan = {x:0, y:0}; crt.settings.zoom = 1; }
+            window.addEventListener('keydown', (event) => {
+                if (event.key !== ' ') return;
+                crt.settings.zoom = 1.0;
+                crt.settings.pan.x = 0.0;
+                crt.settings.pan.y = 0.0;
+                syncParamsFromSettings();
             });
 
-            function loop() {
-                ctx.fillStyle = '#050505'; ctx.fillRect(0,0,1024,1024);
-                ctx.strokeStyle = '#fff'; ctx.lineWidth = 140;
-                ctx.beginPath(); ctx.arc(512,512,300,0,Math.PI*2); ctx.stroke();
-                ['#f00','#0f0','#00f','#fff'].forEach((c,i) => {
-                    ctx.fillStyle = c; ctx.fillRect(252+i*130, 680, 100, 120);
+            function loop(time) {
+                const now = new Date();
+                const timeText = now.toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
                 });
-                crt.render();
+                overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                overlayCtx.fillStyle = 'rgba(0, 0, 0, 0)';
+                overlayCtx.fillRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                overlayCtx.textAlign = 'right';
+                overlayCtx.textBaseline = 'bottom';
+                overlayCtx.font = '600 28px "Trebuchet MS", "Gill Sans", sans-serif';
+                overlayCtx.fillStyle = 'rgba(245, 250, 255, 0.96)';
+                overlayCtx.shadowColor = 'rgba(255, 255, 255, 0.2)';
+                overlayCtx.shadowBlur = 4;
+                overlayCtx.fillText(timeText, overlayCanvas.width - 22, overlayCanvas.height - 18);
+
+                crt.render(time);
                 requestAnimationFrame(loop);
             }
-            loop();
+            requestAnimationFrame(loop);
         });
     </script>
 </body>
