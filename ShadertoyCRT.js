@@ -136,12 +136,14 @@ const ST_PRESENT_FRAG = `#version 300 es
 precision highp float;
 
 uniform sampler2D uInput;
+uniform float uGammaEnabled;
 in vec2 vUV;
 out vec4 outColor;
 
 void main() {
     vec3 color = texture(uInput, vUV).rgb;
-    color = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2));
+    color = clamp(color, 0.0, 1.0);
+    color = mix(color, pow(color, vec3(1.0 / 2.2)), uGammaEnabled);
     outColor = vec4(color, 1.0);
 }`;
 
@@ -170,6 +172,7 @@ class ShadertoyCRT {
             bloomGlow: 3.0,
             bloomBase: 0.5,
             exposure: 1.0,
+            gammaEnabled: 0.0,
         };
 
         this._init();
@@ -224,6 +227,7 @@ class ShadertoyCRT {
         };
         this.uPresent = {
             input: loc(this.progPresent, 'uInput'),
+            gammaEnabled: loc(this.progPresent, 'uGammaEnabled'),
         };
     }
 
@@ -312,6 +316,7 @@ class ShadertoyCRT {
         gl.viewport(0, 0, this.canvas.width, this.canvas.height);
         gl.useProgram(this.progPresent);
         gl.uniform1i(this.uPresent.input, 0);
+        gl.uniform1f(this.uPresent.gammaEnabled, s.gammaEnabled);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.bloomFBO.tex);
         this._drawQuad(this.progPresent);

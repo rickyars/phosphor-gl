@@ -45,7 +45,8 @@
                     bloomRadius: 16.0,
                     bloomGlow: 3.0,
                     bloomBase: 0.5,
-                    exposure: 1.0
+                    exposure: 1.0,
+                    gammaEnabled: false
                 },
                 text: {
                     maskIntensity: 0.82,
@@ -62,7 +63,8 @@
                     bloomRadius: 7.0,
                     bloomGlow: 1.35,
                     bloomBase: 0.22,
-                    exposure: 0.94
+                    exposure: 0.94,
+                    gammaEnabled: false
                 }
             };
 
@@ -82,7 +84,8 @@
                 bloomRadius: 16.0,
                 bloomGlow: 3.0,
                 bloomBase: 0.5,
-                exposure: 1.0
+                exposure: 1.0,
+                gammaEnabled: false
             };
 
             const applyEffectParams = () => {
@@ -101,6 +104,7 @@
                 crt.settings.bloomGlow = PARAMS.bloomGlow;
                 crt.settings.bloomBase = PARAMS.bloomBase;
                 crt.settings.exposure = PARAMS.exposure;
+                crt.settings.gammaEnabled = PARAMS.gammaEnabled ? 1.0 : 0.0;
             };
 
             let pane;
@@ -152,6 +156,9 @@
             bind(toneFolder, 'pulseIntensity', { min: 0.0, max: 0.05 }, (value) => crt.settings.pulseIntensity = value);
             bind(toneFolder, 'pulseWidth', { min: 1.0, max: 200.0 }, (value) => crt.settings.pulseWidth = value);
             bind(toneFolder, 'pulseRate', { min: 0.0, max: 60.0 }, (value) => crt.settings.pulseRate = value);
+            pane.addInput(PARAMS, 'gammaEnabled', { label: 'Display Gamma' }).on('change', ({ value }) => {
+                crt.settings.gammaEnabled = value ? 1.0 : 0.0;
+            });
 
             let isPanning = false;
             let lastMouse = { x: 0, y: 0 };
