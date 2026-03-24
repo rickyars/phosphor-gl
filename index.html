@@ -29,10 +29,45 @@
 
             const crt = new ShadertoyCRT(overlayCanvas, outputCanvas);
 
+            const PRESETS = {
+                default: {
+                    maskIntensity: 1.0,
+                    maskSize: 12.0,
+                    maskBorder: 0.8,
+                    cellOffset: 0.5,
+                    aberrationX: 2.0,
+                    aberrationY: 0.0,
+                    screenCurvature: 0.08,
+                    screenVignette: 0.4,
+                    pulseIntensity: 0.03,
+                    pulseWidth: 60.0,
+                    pulseRate: 20.0,
+                    bloomRadius: 16.0,
+                    bloomGlow: 3.0,
+                    bloomBase: 0.5,
+                    exposure: 1.0
+                },
+                text: {
+                    maskIntensity: 0.82,
+                    maskSize: 2.4,
+                    maskBorder: 0.58,
+                    cellOffset: 0.18,
+                    aberrationX: 0.6,
+                    aberrationY: 0.0,
+                    screenCurvature: 0.03,
+                    screenVignette: 0.22,
+                    pulseIntensity: 0.01,
+                    pulseWidth: 90.0,
+                    pulseRate: 10.0,
+                    bloomRadius: 7.0,
+                    bloomGlow: 1.35,
+                    bloomBase: 0.22,
+                    exposure: 0.94
+                }
+            };
+
             const PARAMS = {
-                zoom: 1.0,
-                panX: 0.0,
-                panY: 0.0,
+                preset: 'default',
                 maskIntensity: 1.0,
                 maskSize: 12.0,
                 maskBorder: 0.8,
@@ -50,34 +85,52 @@
                 exposure: 1.0
             };
 
-            crt.settings.zoom = PARAMS.zoom;
-            crt.settings.pan.x = PARAMS.panX;
-            crt.settings.pan.y = PARAMS.panY;
-            crt.settings.maskIntensity = PARAMS.maskIntensity;
-            crt.settings.maskSize = PARAMS.maskSize;
-            crt.settings.maskBorder = PARAMS.maskBorder;
-            crt.settings.cellOffset = PARAMS.cellOffset;
-            crt.settings.aberrationX = PARAMS.aberrationX;
-            crt.settings.aberrationY = PARAMS.aberrationY;
-            crt.settings.screenCurvature = PARAMS.screenCurvature;
-            crt.settings.screenVignette = PARAMS.screenVignette;
-            crt.settings.pulseIntensity = PARAMS.pulseIntensity;
-            crt.settings.pulseWidth = PARAMS.pulseWidth;
-            crt.settings.pulseRate = PARAMS.pulseRate;
-            crt.settings.bloomRadius = PARAMS.bloomRadius;
-            crt.settings.bloomGlow = PARAMS.bloomGlow;
-            crt.settings.bloomBase = PARAMS.bloomBase;
-            crt.settings.exposure = PARAMS.exposure;
+            const applyEffectParams = () => {
+                crt.settings.maskIntensity = PARAMS.maskIntensity;
+                crt.settings.maskSize = PARAMS.maskSize;
+                crt.settings.maskBorder = PARAMS.maskBorder;
+                crt.settings.cellOffset = PARAMS.cellOffset;
+                crt.settings.aberrationX = PARAMS.aberrationX;
+                crt.settings.aberrationY = PARAMS.aberrationY;
+                crt.settings.screenCurvature = PARAMS.screenCurvature;
+                crt.settings.screenVignette = PARAMS.screenVignette;
+                crt.settings.pulseIntensity = PARAMS.pulseIntensity;
+                crt.settings.pulseWidth = PARAMS.pulseWidth;
+                crt.settings.pulseRate = PARAMS.pulseRate;
+                crt.settings.bloomRadius = PARAMS.bloomRadius;
+                crt.settings.bloomGlow = PARAMS.bloomGlow;
+                crt.settings.bloomBase = PARAMS.bloomBase;
+                crt.settings.exposure = PARAMS.exposure;
+            };
 
-            const pane = new Tweakpane.Pane();
+            let pane;
+
+            const applyPreset = (presetName) => {
+                const preset = PRESETS[presetName];
+                if (!preset) return;
+                PARAMS.preset = presetName;
+                Object.assign(PARAMS, preset);
+                applyEffectParams();
+                if (pane) pane.refresh();
+            };
+
+            crt.settings.zoom = 1.0;
+            crt.settings.pan.x = 0.0;
+            crt.settings.pan.y = 0.0;
+            applyPreset(PARAMS.preset);
+
+            pane = new Tweakpane.Pane();
             const bind = (folder, key, options, setter) => {
                 folder.addInput(PARAMS, key, options).on('change', ({ value }) => setter(value));
             };
+            pane.addInput(PARAMS, 'preset', {
+                options: {
+                    Default: 'default',
+                    'Text Friendly': 'text'
+                }
+            }).on('change', ({ value }) => applyPreset(value));
 
-            const viewFolder = pane.addFolder({ title: 'View' });
-            bind(viewFolder, 'zoom', { min: 0.5, max: 24.0 }, (value) => crt.settings.zoom = value);
-            bind(viewFolder, 'panX', { min: -0.5, max: 0.5 }, (value) => crt.settings.pan.x = value);
-            bind(viewFolder, 'panY', { min: -0.5, max: 0.5 }, (value) => crt.settings.pan.y = value);
+            const viewFolder = pane.addFolder({ title: 'Screen' });
             bind(viewFolder, 'screenCurvature', { min: 0.0, max: 0.2 }, (value) => crt.settings.screenCurvature = value);
             bind(viewFolder, 'screenVignette', { min: 0.05, max: 1.0 }, (value) => crt.settings.screenVignette = value);
 
@@ -102,12 +155,6 @@
 
             let isPanning = false;
             let lastMouse = { x: 0, y: 0 };
-            const syncParamsFromSettings = () => {
-                PARAMS.zoom = crt.settings.zoom;
-                PARAMS.panX = crt.settings.pan.x;
-                PARAMS.panY = crt.settings.pan.y;
-                pane.refresh();
-            };
 
             outputCanvas.addEventListener('mousedown', (event) => {
                 if (event.button !== 0) return;
@@ -127,7 +174,6 @@
                 crt.settings.pan.x += (event.clientX - lastMouse.x) / (outputCanvas.clientWidth * zoom);
                 crt.settings.pan.y -= (event.clientY - lastMouse.y) / (outputCanvas.clientHeight * zoom);
                 lastMouse = { x: event.clientX, y: event.clientY };
-                syncParamsFromSettings();
             });
 
             outputCanvas.addEventListener('wheel', (event) => {
@@ -146,15 +192,13 @@
                 crt.settings.pan.x = oldPanX + anchorX * (1.0 / oldZoom - 1.0 / newZoom);
                 crt.settings.pan.y = oldPanY + anchorY * (1.0 / newZoom - 1.0 / oldZoom);
                 crt.settings.zoom = newZoom;
-                syncParamsFromSettings();
             }, { passive: false });
 
             window.addEventListener('keydown', (event) => {
-                if (event.key !== ' ') return;
+                if (event.key !== ' ' && event.key.toLowerCase() !== 'r') return;
                 crt.settings.zoom = 1.0;
                 crt.settings.pan.x = 0.0;
                 crt.settings.pan.y = 0.0;
-                syncParamsFromSettings();
             });
 
             function loop(time) {
