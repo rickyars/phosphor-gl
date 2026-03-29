@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -34,6 +34,7 @@
                     maskIntensity: 1.0,
                     maskSize: 12.0,
                     maskBorder: 0.8,
+                    maskMode: 0,
                     cellOffset: 0.5,
                     aberrationX: 2.0,
                     aberrationY: 0.0,
@@ -52,6 +53,7 @@
                     maskIntensity: 0.82,
                     maskSize: 2.4,
                     maskBorder: 0.58,
+                    maskMode: 1,
                     cellOffset: 0.18,
                     aberrationX: 0.6,
                     aberrationY: 0.0,
@@ -73,6 +75,7 @@
                 maskIntensity: 1.0,
                 maskSize: 12.0,
                 maskBorder: 0.8,
+                maskMode: 0,
                 cellOffset: 0.5,
                 aberrationX: 2.0,
                 aberrationY: 0.0,
@@ -92,6 +95,7 @@
                 crt.settings.maskIntensity = PARAMS.maskIntensity;
                 crt.settings.maskSize = PARAMS.maskSize;
                 crt.settings.maskBorder = PARAMS.maskBorder;
+                crt.settings.maskMode = PARAMS.maskMode;
                 crt.settings.cellOffset = PARAMS.cellOffset;
                 crt.settings.aberrationX = PARAMS.aberrationX;
                 crt.settings.aberrationY = PARAMS.aberrationY;
@@ -147,6 +151,15 @@
             bind(maskFolder, 'maskIntensity', { min: 0.0, max: 1.0 }, (value) => crt.settings.maskIntensity = value);
             bind(maskFolder, 'maskSize', { min: 2.0, max: 24.0 }, (value) => crt.settings.maskSize = value);
             bind(maskFolder, 'maskBorder', { min: 0.0, max: 2.0 }, (value) => crt.settings.maskBorder = value);
+            maskFolder.addInput(PARAMS, 'maskMode', {
+                label: 'Mask Mode',
+                options: {
+                    Triad: 0,
+                    Row: 1
+                }
+            }).on('change', ({ value }) => {
+                crt.settings.maskMode = value;
+            });
             bind(maskFolder, 'cellOffset', { min: 0.0, max: 1.0 }, (value) => crt.settings.cellOffset = value);
             bind(maskFolder, 'aberrationX', { min: -8.0, max: 8.0 }, (value) => crt.settings.aberrationX = value);
             bind(maskFolder, 'aberrationY', { min: -8.0, max: 8.0 }, (value) => crt.settings.aberrationY = value);
@@ -234,3 +247,6 @@
     </script>
 </body>
 </html>
+
+
+

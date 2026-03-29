@@ -1,4 +1,4 @@
-const ST_VERT = `#version 300 es
+﻿const ST_VERT = `#version 300 es
 in vec2 aPos;
 out vec2 vUV;
 void main() {
@@ -45,6 +45,7 @@ uniform vec2 uResolution;
 uniform float uMaskIntensity;
 uniform float uMaskSize;
 uniform float uMaskBorder;
+uniform float uMaskMode;
 uniform vec2 uAberrationOffset;
 uniform float uScreenCurvature;
 uniform float uScreenVignette;
@@ -77,7 +78,7 @@ void main() {
 
     vec2 coord = pixel / uMaskSize;
     vec2 subcoord = coord * vec2(3.0, 1.0);
-    vec2 cellOffset = vec2(0.0, fract(floor(coord.x) * uCellOffset));
+    vec2 cellOffset = uMaskMode < 0.5 ? vec2(0.0, fract(floor(coord.x) * uCellOffset)) : vec2(0.0);
     vec2 maskCoord = floor(coord + cellOffset) * uMaskSize;
 
     vec2 baseUV = maskCoord / uResolution;
@@ -160,6 +161,7 @@ class ShadertoyCRT {
             maskIntensity: 1.0,
             maskSize: 12.0,
             maskBorder: 0.8,
+            maskMode: 0.0,
             cellOffset: 0.5,
             aberrationX: 2.0,
             aberrationY: 0.0,
@@ -206,6 +208,7 @@ class ShadertoyCRT {
             maskIntensity: loc(this.progCRT, 'uMaskIntensity'),
             maskSize: loc(this.progCRT, 'uMaskSize'),
             maskBorder: loc(this.progCRT, 'uMaskBorder'),
+            maskMode: loc(this.progCRT, 'uMaskMode'),
             aberrationOffset: loc(this.progCRT, 'uAberrationOffset'),
             screenCurvature: loc(this.progCRT, 'uScreenCurvature'),
             screenVignette: loc(this.progCRT, 'uScreenVignette'),
@@ -285,6 +288,7 @@ class ShadertoyCRT {
         gl.uniform1f(this.uCRT.maskIntensity, s.maskIntensity);
         gl.uniform1f(this.uCRT.maskSize, s.maskSize);
         gl.uniform1f(this.uCRT.maskBorder, s.maskBorder);
+        gl.uniform1f(this.uCRT.maskMode, s.maskMode);
         gl.uniform2f(this.uCRT.aberrationOffset, s.aberrationX, s.aberrationY);
         gl.uniform1f(this.uCRT.screenCurvature, s.screenCurvature);
         gl.uniform1f(this.uCRT.screenVignette, s.screenVignette);
@@ -381,3 +385,5 @@ class ShadertoyCRT {
         return program;
     }
 }
+
+
