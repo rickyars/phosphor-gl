@@ -1,0 +1,52 @@
+/*
+    Bloom pass
+    
+    "GM Shaders: CRT" by @XorDev
+    
+    How to create a simple CRT effect including:
+    
+    -RGB pixel cells
+    -Chromatic aberration
+    -Screen curvature
+    -Vignette
+    -Pulsing
+    -Bloom pass
+    
+    Based on my 1 pass blur:
+    https://github.com/XorDev/1PassBlur
+*/
+
+//Bloom radius in pixels
+#define BLOOM_RADIUS 16.0
+//Bloom texture samples
+#define BLOOM_SAMPLES 32.0
+//Bloom base brightness
+#define BLOOM_BASE 0.5
+//Bloom glow brightness
+#define BLOOM_GLOW 3.0
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord)
+{
+    //Resolution and texel size
+    vec2 res = iResolution.xy;
+    vec2 texel = 1.0 / res;
+    
+    //Bloom total
+   	vec4 bloom = vec4(0);
+    //Sample point
+    vec2 point = vec2(BLOOM_RADIUS, 0)*inversesqrt(BLOOM_SAMPLES);
+    for(float i = 0.0; i<BLOOM_SAMPLES; i++)
+    {
+        //Rotate by golden angle
+        point *= -mat2(0.7374, 0.6755, -0.6755, 0.7374);
+        //Compute sample coordinates from rotated sample point
+        vec2 coord = (fragCoord + point*sqrt(i)) * texel;
+        //Add bloom samples
+        bloom += texture(iChannel0, coord) * (1.0 - i/BLOOM_SAMPLES);
+    }
+    //Compute bloom average
+    bloom *= BLOOM_GLOW/BLOOM_SAMPLES;
+    //Add base sample
+    bloom += texture(iChannel0,fragCoord*texel)*BLOOM_BASE;
+    fragColor = bloom;
+}

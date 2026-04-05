@@ -65,7 +65,7 @@ void main() {
     vec2 cellOffset = uMaskMode < 0.5 ? vec2(0.0, fract(floor(coord.x) * uCellOffset)) : vec2(0.0);
     vec2 maskCoord = floor(coord + cellOffset) * uMaskSize;
 
-    vec2 sampleUV = vec2(maskCoord.x / uResolution.x, 1.0 - maskCoord.y / uResolution.y);
+    vec2 sampleUV = vec2(maskCoord.x / uResolution.x, maskCoord.y / uResolution.y);
     vec3 color;
     color.r = texture(uSource, sampleUV - uAberrationOffset / uSourceResolution).r;
     color.g = texture(uSource, sampleUV).g;
@@ -452,4 +452,5 @@ class CRTShader {
         return program;
     }
 }
+
 

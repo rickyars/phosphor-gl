@@ -578,6 +578,8 @@
                 scene.render(time);
                 if (activeMedia === sourceVideo && sourceVideo.readyState >= 2) {
                     drawMediaToCanvas();
+                } else if (activeMedia === sourceImage) {
+                    drawMediaToCanvas();
                 }
                 crt.render(time);
                 requestAnimationFrame(loop);
@@ -588,6 +590,7 @@
     </script>
 </body>
 </html>
+
 
 
 

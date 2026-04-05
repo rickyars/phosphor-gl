@@ -1,0 +1,29 @@
+/*
+    Color pass
+    
+    Based on "Cosmic":
+    https://www.shadertoy.com/view/msjXRK
+*/
+void mainImage(out vec4 O, vec2 I)
+{
+    //Clear fragcolor (hacky)
+    O *= 0.;
+    //Initialize resolution for scaling
+    vec2 r=iResolution.xy,
+    //Save centered pixel coordinates
+    p = (I-r*vec2(.53,.58))*mat2(1,-1,2,2);
+    
+    //Initialize loop iterator and arc angle
+    for(float i=0.,a;
+        //Loop 300 times
+        i++<1e1;
+        //Add with ring attenuation
+        O += 1. / (abs(length(I=p/(r+r-p).y)*3e1-i)+4e1/r.y)*
+        //Limit to arcs
+        clamp(cos(a=atan(I.y,I.x)*ceil(i*.2)+iTime*sin(i*i)+i*i),.0,.1)*
+        //Give them color
+        (cos(a-i+vec4(0,2,3,0))+1.));
+    
+    //Range fix
+    O = clamp(O,0.,1.);
+}
