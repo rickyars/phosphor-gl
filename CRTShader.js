@@ -1,4 +1,4 @@
-﻿const ST_VERT = `#version 300 es
+const CRT_VERT = `#version 300 es
 in vec2 aPos;
 out vec2 vUV;
 void main() {
@@ -6,42 +6,13 @@ void main() {
     gl_Position = vec4(aPos, 0.0, 1.0);
 }`;
 
-const ST_BUFFER_A_FRAG = `#version 300 es
-precision highp float;
-
-uniform vec2 uResolution;
-uniform float uTime;
-uniform sampler2D uOverlay;
-
-in vec2 vUV;
-out vec4 outColor;
-
-void main() {
-    vec2 fragCoord = vUV * uResolution;
-    vec4 O = vec4(0.0);
-    vec2 r = uResolution;
-    vec2 p = (fragCoord - r * vec2(0.53, 0.58)) * mat2(1.0, -1.0, 2.0, 2.0);
-
-    for (float i = 0.0, a = 0.0; i < 10.0; i += 1.0) {
-        vec2 I = p / (r + r - p).y * 30.0;
-        float ring = 1.0 / (abs(length(I) - i) + 40.0 / r.y);
-        a = atan(I.y, I.x) * ceil(i * 0.2) + uTime * sin(i * i) + i * i;
-        float arc = clamp(cos(a), 0.0, 0.1);
-        O += ring * arc * (cos(a - i + vec4(0.0, 2.0, 3.0, 0.0)) + 1.0);
-    }
-
-    vec2 overlayUV = fragCoord / uResolution;
-    vec4 overlay = texture(uOverlay, vec2(overlayUV.x, 1.0 - overlayUV.y));
-    vec3 color = clamp(O.rgb, 0.0, 1.0);
-    color = mix(color, overlay.rgb, overlay.a);
-    outColor = vec4(color, 1.0);
-}`;
-
-const ST_CRT_FRAG = `#version 300 es
+const CRT_EFFECT_FRAG = `#version 300 es
 precision highp float;
 
 uniform sampler2D uSource;
+uniform sampler2D uBlueNoise;
 uniform vec2 uResolution;
+uniform vec2 uSourceResolution;
 uniform float uMaskIntensity;
 uniform float uMaskSize;
 uniform float uMaskBorder;
@@ -52,14 +23,24 @@ uniform float uScreenVignette;
 uniform float uPulseIntensity;
 uniform float uPulseWidth;
 uniform float uPulseRate;
+uniform float uSignalWaver;
+uniform float uPhosphorFlicker;
+uniform float uScanlineShimmer;
 uniform float uZoom;
 uniform vec2 uPan;
 uniform float uCellOffset;
 uniform float uExposure;
 uniform float uTime;
+uniform float uFrame;
 
 in vec2 vUV;
 out vec4 outColor;
+
+vec3 bn(vec2 px, float channelOffset) {
+    vec2 uv = (px + channelOffset) / 64.0;
+    vec3 noiseTexel = texture(uBlueNoise, uv).rgb;
+    return fract(noiseTexel + 0.61803398874 * uFrame);
+}
 
 void main() {
     vec2 uv = vUV * 2.0 - 1.0;
@@ -76,32 +57,44 @@ void main() {
     vec2 edge = max(1.0 - uv * uv, 0.0);
     float vignette = pow(max(edge.x * edge.y, 0.0), uScreenVignette);
 
-    vec2 coord = pixel / uMaskSize;
+    float waveNoise = bn(vec2(0.0, pixel.y), 7.0).r - 0.5;
+    float wavePx = waveNoise * uSignalWaver;
+
+    vec2 coord = (pixel + vec2(wavePx, 0.0)) / uMaskSize;
     vec2 subcoord = coord * vec2(3.0, 1.0);
     vec2 cellOffset = uMaskMode < 0.5 ? vec2(0.0, fract(floor(coord.x) * uCellOffset)) : vec2(0.0);
     vec2 maskCoord = floor(coord + cellOffset) * uMaskSize;
 
-    vec2 baseUV = maskCoord / uResolution;
-    vec4 aberration = texture(uSource, (maskCoord - uAberrationOffset) / uResolution);
-    aberration.g = texture(uSource, (maskCoord + uAberrationOffset) / uResolution).g;
-    vec3 color = aberration.rgb;
+    vec2 sampleUV = vec2(maskCoord.x / uResolution.x, 1.0 - maskCoord.y / uResolution.y);
+    vec3 color;
+    color.r = texture(uSource, sampleUV - uAberrationOffset / uSourceResolution).r;
+    color.g = texture(uSource, sampleUV).g;
+    color.b = texture(uSource, sampleUV + uAberrationOffset / uSourceResolution).b;
 
     float ind = mod(floor(subcoord.x), 3.0);
     vec3 maskColor = vec3(ind == 0.0, ind == 1.0, ind == 2.0) * 3.0;
 
     vec2 cellUV = fract(subcoord + cellOffset) * 2.0 - 1.0;
     vec2 border = 1.0 - cellUV * cellUV * uMaskBorder;
-    maskColor *= clamp(border.x, 0.0, 1.0) * clamp(border.y, 0.0, 1.0);
+    float borderMask = clamp(border.x, 0.0, 1.0) * clamp(border.y, 0.0, 1.0);
+    maskColor *= borderMask;
+
+    vec3 flickerNoise = bn(pixel, 0.0) - 0.5;
+    maskColor *= 1.0 + flickerNoise * uPhosphorFlicker;
 
     color *= 1.0 + (maskColor - 1.0) * uMaskIntensity;
     color *= vignette;
     color *= 1.0 + uPulseIntensity * cos(pixel.x / max(uPulseWidth, 0.001) + uTime * uPulseRate);
+
+    float shimmerNoise = bn(vec2(0.0, floor(pixel.y / uMaskSize)), 13.0).r - 0.5;
+    color *= 1.0 + shimmerNoise * uScanlineShimmer;
+
     color *= uExposure;
 
     outColor = vec4(max(color, 0.0), 1.0);
 }`;
 
-const ST_BLOOM_FRAG = `#version 300 es
+const CRT_BLOOM_FRAG = `#version 300 es
 precision highp float;
 
 uniform sampler2D uInput;
@@ -133,7 +126,7 @@ void main() {
     outColor = bloom;
 }`;
 
-const ST_PRESENT_FRAG = `#version 300 es
+const CRT_PRESENT_FRAG = `#version 300 es
 precision highp float;
 
 uniform sampler2D uInput;
@@ -148,9 +141,9 @@ void main() {
     outColor = vec4(color, 1.0);
 }`;
 
-class ShadertoyCRT {
-    constructor(source, canvas) {
-        this.source = source;
+class CRTShader {
+    constructor(sourceCanvas, canvas) {
+        this.sourceCanvas = sourceCanvas;
         this.canvas = canvas;
         this.gl = canvas.getContext('webgl2', { antialias: false });
         if (!this.gl) throw new Error('WebGL2 required');
@@ -170,12 +163,16 @@ class ShadertoyCRT {
             pulseIntensity: 0.03,
             pulseWidth: 60.0,
             pulseRate: 20.0,
+            signalWaver: 0.8,
+            phosphorFlicker: 0.12,
+            scanlineShimmer: 0.1,
             bloomRadius: 16.0,
             bloomGlow: 3.0,
             bloomBase: 0.5,
             exposure: 1.0,
             gammaEnabled: 0.0,
         };
+        this._frame = 0;
 
         this._init();
     }
@@ -188,23 +185,20 @@ class ShadertoyCRT {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
 
-        this.overlayTex = this._createTex(1024, 1024, false, false);
+        this.sourceTex = this._createTex(2, 2, false, false);
+        this.blueNoiseTex = this._generateBlueNoise(64);
         this._buildFBOs();
 
-        this.progBufferA = this._compile(ST_VERT, ST_BUFFER_A_FRAG);
-        this.progCRT = this._compile(ST_VERT, ST_CRT_FRAG);
-        this.progBloom = this._compile(ST_VERT, ST_BLOOM_FRAG);
-        this.progPresent = this._compile(ST_VERT, ST_PRESENT_FRAG);
+        this.progCRT = this._compile(CRT_VERT, CRT_EFFECT_FRAG);
+        this.progBloom = this._compile(CRT_VERT, CRT_BLOOM_FRAG);
+        this.progPresent = this._compile(CRT_VERT, CRT_PRESENT_FRAG);
 
         const loc = (prog, name) => gl.getUniformLocation(prog, name);
-        this.uBufferA = {
-            resolution: loc(this.progBufferA, 'uResolution'),
-            time: loc(this.progBufferA, 'uTime'),
-            overlay: loc(this.progBufferA, 'uOverlay'),
-        };
         this.uCRT = {
             source: loc(this.progCRT, 'uSource'),
+            blueNoise: loc(this.progCRT, 'uBlueNoise'),
             resolution: loc(this.progCRT, 'uResolution'),
+            sourceResolution: loc(this.progCRT, 'uSourceResolution'),
             maskIntensity: loc(this.progCRT, 'uMaskIntensity'),
             maskSize: loc(this.progCRT, 'uMaskSize'),
             maskBorder: loc(this.progCRT, 'uMaskBorder'),
@@ -215,11 +209,15 @@ class ShadertoyCRT {
             pulseIntensity: loc(this.progCRT, 'uPulseIntensity'),
             pulseWidth: loc(this.progCRT, 'uPulseWidth'),
             pulseRate: loc(this.progCRT, 'uPulseRate'),
+            signalWaver: loc(this.progCRT, 'uSignalWaver'),
+            phosphorFlicker: loc(this.progCRT, 'uPhosphorFlicker'),
+            scanlineShimmer: loc(this.progCRT, 'uScanlineShimmer'),
             zoom: loc(this.progCRT, 'uZoom'),
             pan: loc(this.progCRT, 'uPan'),
             cellOffset: loc(this.progCRT, 'uCellOffset'),
             exposure: loc(this.progCRT, 'uExposure'),
             time: loc(this.progCRT, 'uTime'),
+            frame: loc(this.progCRT, 'uFrame'),
         };
         this.uBloom = {
             input: loc(this.progBloom, 'uInput'),
@@ -239,16 +237,13 @@ class ShadertoyCRT {
         const w = this.canvas.width;
         const h = this.canvas.height;
 
-        if (this.sceneFBO) {
-            gl.deleteTexture(this.sceneFBO.tex);
-            gl.deleteFramebuffer(this.sceneFBO.fb);
+        if (this.crtFBO) {
             gl.deleteTexture(this.crtFBO.tex);
             gl.deleteFramebuffer(this.crtFBO.fb);
             gl.deleteTexture(this.bloomFBO.tex);
             gl.deleteFramebuffer(this.bloomFBO.fb);
         }
 
-        this.sceneFBO = this._createFBO(w, h, false);
         this.crtFBO = this._createFBO(w, h, false);
         this.bloomFBO = this._createFBO(w, h, false);
         this.fboW = w;
@@ -265,26 +260,18 @@ class ShadertoyCRT {
             this._buildFBOs();
         }
 
-        if (this.source) {
-            gl.bindTexture(gl.TEXTURE_2D, this.overlayTex);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.source);
-        }
-
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneFBO.fb);
-        gl.viewport(0, 0, this.fboW, this.fboH);
-        gl.useProgram(this.progBufferA);
-        gl.uniform2f(this.uBufferA.resolution, this.fboW, this.fboH);
-        gl.uniform1f(this.uBufferA.time, time * 0.001);
-        gl.uniform1i(this.uBufferA.overlay, 0);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.overlayTex);
-        this._drawQuad(this.progBufferA);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.bindTexture(gl.TEXTURE_2D, this.sourceTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.sourceCanvas);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.crtFBO.fb);
         gl.viewport(0, 0, this.fboW, this.fboH);
         gl.useProgram(this.progCRT);
         gl.uniform1i(this.uCRT.source, 0);
+        gl.uniform1i(this.uCRT.blueNoise, 1);
         gl.uniform2f(this.uCRT.resolution, this.fboW, this.fboH);
+        gl.uniform2f(this.uCRT.sourceResolution, this.sourceCanvas.width, this.sourceCanvas.height);
         gl.uniform1f(this.uCRT.maskIntensity, s.maskIntensity);
         gl.uniform1f(this.uCRT.maskSize, s.maskSize);
         gl.uniform1f(this.uCRT.maskBorder, s.maskBorder);
@@ -295,14 +282,21 @@ class ShadertoyCRT {
         gl.uniform1f(this.uCRT.pulseIntensity, s.pulseIntensity);
         gl.uniform1f(this.uCRT.pulseWidth, s.pulseWidth);
         gl.uniform1f(this.uCRT.pulseRate, s.pulseRate);
+        gl.uniform1f(this.uCRT.signalWaver, s.signalWaver);
+        gl.uniform1f(this.uCRT.phosphorFlicker, s.phosphorFlicker);
+        gl.uniform1f(this.uCRT.scanlineShimmer, s.scanlineShimmer);
         gl.uniform1f(this.uCRT.zoom, s.zoom);
         gl.uniform2f(this.uCRT.pan, s.pan.x, s.pan.y);
         gl.uniform1f(this.uCRT.cellOffset, s.cellOffset);
         gl.uniform1f(this.uCRT.exposure, s.exposure);
         gl.uniform1f(this.uCRT.time, time * 0.001);
+        gl.uniform1f(this.uCRT.frame, this._frame);
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.sceneFBO.tex);
+        gl.bindTexture(gl.TEXTURE_2D, this.sourceTex);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this.blueNoiseTex);
         this._drawQuad(this.progCRT);
+        this._frame++;
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomFBO.fb);
         gl.viewport(0, 0, this.fboW, this.fboH);
@@ -333,6 +327,79 @@ class ShadertoyCRT {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
         gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+
+    _generateBlueNoise(size) {
+        const gl = this.gl;
+        const n = size * size;
+        const data = new Uint8Array(n * 4);
+        const sigma2 = 2.0 * 1.5 * 1.5;
+        const r = 3;
+
+        const makeChannel = (seed) => {
+            let s = seed >>> 0;
+            const wn = new Float32Array(n);
+            for (let i = 0; i < n; i++) {
+                s = Math.imul(s, 1664525) + 1013904223 >>> 0;
+                wn[i] = (s >>> 8) / 16777216.0;
+            }
+
+            const energy = new Float32Array(n);
+            const rank = new Uint8Array(n);
+            const order = Array.from({ length: n }, (_, i) => i);
+            order.sort((a, b) => wn[a] - wn[b]);
+
+            for (let step = 0; step < n; step++) {
+                let best = -1;
+                let bestE = Infinity;
+                for (let j = step; j < n; j++) {
+                    const idx = order[j];
+                    if (energy[idx] < bestE) {
+                        bestE = energy[idx];
+                        best = j;
+                    }
+                }
+                const tmp = order[step];
+                order[step] = order[best];
+                order[best] = tmp;
+                const idx = order[step];
+                rank[idx] = step;
+
+                const px = idx % size;
+                const py = (idx / size) | 0;
+                for (let dy = -r; dy <= r; dy++) {
+                    for (let dx = -r; dx <= r; dx++) {
+                        const nx = (px + dx + size) % size;
+                        const ny = (py + dy + size) % size;
+                        energy[ny * size + nx] += Math.exp(-(dx * dx + dy * dy) / sigma2);
+                    }
+                }
+            }
+
+            const out = new Uint8Array(n);
+            for (let i = 0; i < n; i++) out[i] = Math.round((rank[i] / (n - 1)) * 255);
+            return out;
+        };
+
+        const rCh = makeChannel(0xDEADBEEF);
+        const gCh = makeChannel(0xCAFEBABE);
+        const bCh = makeChannel(0x12345678);
+
+        for (let i = 0; i < n; i++) {
+            data[i * 4 + 0] = rCh[i];
+            data[i * 4 + 1] = gCh[i];
+            data[i * 4 + 2] = bCh[i];
+            data[i * 4 + 3] = 255;
+        }
+
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+        return tex;
     }
 
     _createTex(w, h, isFloat, nearest) {
@@ -385,5 +452,4 @@ class ShadertoyCRT {
         return program;
     }
 }
-
 
