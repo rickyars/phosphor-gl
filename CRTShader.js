@@ -145,7 +145,7 @@ class CRTShader {
     constructor(sourceCanvas, canvas) {
         this.sourceCanvas = sourceCanvas;
         this.canvas = canvas;
-        this.gl = canvas.getContext('webgl2', { antialias: false });
+        this.gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
         if (!this.gl) throw new Error('WebGL2 required');
 
         this.settings = {
@@ -452,5 +452,6 @@ class CRTShader {
         return program;
     }
 }
+
 
 

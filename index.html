@@ -123,10 +123,19 @@
         }
 
         #scene-canvas,
-        #media-canvas,
+        #media-canvas {
+            display: none;
+        }
+
         #source-video,
         #source-image {
-            display: none;
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+            left: -9999px;
+            top: -9999px;
         }
 
         @media (max-width: 900px) {
@@ -166,6 +175,8 @@
                 <input id="file-input" type="file" accept="image/*,video/*">
             </label>
             <button id="reset-view" type="button">Reset View</button>
+            <button id="download-frame" type="button">Download PNG</button>
+            <button id="record-output" type="button">Record WEBM</button>
             <div id="status" class="status">Showing the Shadertoy scene through the shared CRT pipeline.</div>
         </div>
     </aside>
@@ -191,6 +202,8 @@
             const sourceModeSelect = document.getElementById('source-mode');
             const fileInput = document.getElementById('file-input');
             const resetButton = document.getElementById('reset-view');
+            const downloadButton = document.getElementById('download-frame');
+            const recordButton = document.getElementById('record-output');
             const status = document.getElementById('status');
             const stageLabel = document.getElementById('stage-label');
             const outputCanvas = document.getElementById('crt-canvas');
@@ -282,6 +295,9 @@
             let activeSource = 'demo';
             let isPanning = false;
             let lastMouse = { x: 0, y: 0 };
+            let mediaRecorder = null;
+            let recordedChunks = [];
+            let isRecording = false;
 
             const applyEffectParams = () => {
                 crt.settings.maskIntensity = PARAMS.maskIntensity;
@@ -465,7 +481,70 @@
             });
 
             resetButton.addEventListener('click', resetView);
-
+            downloadButton.addEventListener('click', () => {
+                const activeLabel = activeSource === 'demo' ? 'shadertoy-scene' : ((activeMedia && activeMedia.dataset.label) || 'crt-output')
+                    .toLowerCase()
+                    .replace(/\.[^/.]+$/, '')
+                    .replace(/[^a-z0-9]+/g, '-')
+                    .replace(/^-+|-+$/g, '') || 'crt-output';
+                requestAnimationFrame(() => {
+                    outputCanvas.toBlob((blob) => {
+                        if (!blob) {
+                            setStatus('Unable to export PNG from the current frame.');
+                            return;
+                        }
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = activeLabel + '-crt.png';
+                        link.click();
+                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    }, 'image/png');
+                });
+            });
+            recordButton.addEventListener('click', () => {
+                if (isRecording) {
+                    mediaRecorder.stop();
+                    return;
+                }
+                if (!outputCanvas.captureStream || typeof MediaRecorder === 'undefined') {
+                    setStatus('WEBM recording is not supported in this browser.');
+                    return;
+                }
+                const stream = outputCanvas.captureStream(60);
+                recordedChunks = [];
+                let mimeType = 'video/webm;codecs=vp9';
+                if (!MediaRecorder.isTypeSupported(mimeType)) {
+                    mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8') ? 'video/webm;codecs=vp8' : 'video/webm';
+                }
+                mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+                mediaRecorder.addEventListener('dataavailable', (event) => {
+                    if (event.data && event.data.size > 0) {
+                        recordedChunks.push(event.data);
+                    }
+                });
+                mediaRecorder.addEventListener('stop', () => {
+                    isRecording = false;
+                    recordButton.textContent = 'Record WEBM';
+                    const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    const activeLabel = activeSource === 'demo' ? 'shadertoy-scene' : ((activeMedia && activeMedia.dataset.label) || 'crt-output')
+                        .toLowerCase()
+                        .replace(/\.[^/.]+$/, '')
+                        .replace(/[^a-z0-9]+/g, '-')
+                        .replace(/^-+|-+$/g, '') || 'crt-output';
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = activeLabel + '-crt.webm';
+                    link.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    setStatus('Saved recording: ' + activeLabel + '-crt.webm');
+                });
+                mediaRecorder.start();
+                isRecording = true;
+                recordButton.textContent = 'Stop Recording';
+                setStatus('Recording CRT output to WEBM. Click again to stop.');
+            });
             pane = new Tweakpane.Pane({ title: 'CRT Controls' });
             const bind = (folder, key, options, setter) => {
                 folder.addInput(PARAMS, key, options).on('change', ({ value }) => setter(value));
@@ -590,6 +669,10 @@
     </script>
 </body>
 </html>
+
+
+
+
 
 
 
