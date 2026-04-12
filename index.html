@@ -194,11 +194,11 @@
         </div>
     </main>
 
-    <script src="https://cdn.jsdelivr.net/npm/gifuct-js@2.1.2/dist/gifuct-js.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/tweakpane@3.1.0/dist/tweakpane.min.js"></script>
     <script src="CRTShader.js"></script>
     <script src="ShadertoyScene.js"></script>
-    <script>
+    <script type="module">
+import { parseGIF, decompressFrames } from 'https://cdn.jsdelivr.net/npm/gifuct-js@2.1.2/+esm';
         window.addEventListener('load', () => {
             const sourceModeSelect = document.getElementById('source-mode');
             const fileInput = document.getElementById('file-input');
