@@ -301,7 +301,7 @@
             let isRecording = false;
             let activeGif = null;
             let gifFrameIndex = 0;
-            let gifFrameTime = 0;
+            let gifFrameTime = null;
 
             const applyEffectParams = () => {
                 crt.settings.maskIntensity = PARAMS.maskIntensity;
@@ -420,7 +420,7 @@
                 if (!activeGif || activeGif.length === 0) return;
 
                 // First call: anchor the frame clock to the current rAF timestamp
-                if (gifFrameTime === 0) {
+                if (gifFrameTime === null) {
                     gifFrameTime = time;
                     mediaCtx.putImageData(activeGif[0].imageData, 0, 0);
                     return;
@@ -429,7 +429,8 @@
                 let elapsed = time - gifFrameTime;
                 let currentDelay = activeGif[gifFrameIndex].delay;
 
-                // Advance frame(s) if enough time has passed
+                // Advance frame(s) if enough time has passed.
+                // Zero-delay frames are clamped to 100ms at decode time, so currentDelay >= 100.
                 let changed = false;
                 while (elapsed >= currentDelay) {
                     elapsed -= currentDelay;
@@ -458,7 +459,7 @@
                 }
                 activeGif = null;
                 gifFrameIndex = 0;
-                gifFrameTime = 0;
+                gifFrameTime = null;
                 drawPlaceholder();
             };
 
@@ -526,7 +527,7 @@
                         });
 
                         gifFrameIndex = 0;
-                        gifFrameTime = 0;
+                        gifFrameTime = null;
                         useUploadedSource();
                         setStatus(`Showing GIF: ${file.name} (${activeGif.length} frames)`);
                     } catch (err) {
