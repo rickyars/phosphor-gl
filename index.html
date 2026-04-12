@@ -416,6 +416,35 @@
                 mediaCtx.drawImage(activeMedia, dx, dy, dw, dh);
             };
 
+            const drawGifFrameToCanvas = (time) => {
+                if (!activeGif || activeGif.length === 0) return;
+
+                // First call: anchor the frame clock to the current rAF timestamp
+                if (gifFrameTime === 0) {
+                    gifFrameTime = time;
+                    mediaCtx.putImageData(activeGif[0].imageData, 0, 0);
+                    return;
+                }
+
+                let elapsed = time - gifFrameTime;
+                let currentDelay = activeGif[gifFrameIndex].delay;
+
+                // Advance frame(s) if enough time has passed
+                let changed = false;
+                while (elapsed >= currentDelay) {
+                    elapsed -= currentDelay;
+                    gifFrameIndex = (gifFrameIndex + 1) % activeGif.length;
+                    currentDelay = activeGif[gifFrameIndex].delay;
+                    changed = true;
+                }
+
+                // Update the frame clock to reflect consumed time
+                if (changed) {
+                    gifFrameTime = time - elapsed;
+                    mediaCtx.putImageData(activeGif[gifFrameIndex].imageData, 0, 0);
+                }
+            };
+
             const clearCurrentMedia = () => {
                 sourceVideo.pause();
                 sourceVideo.controls = false;
@@ -730,6 +759,8 @@
                 scene.render(time);
                 if (activeMedia === sourceVideo && sourceVideo.readyState >= 2) {
                     drawMediaToCanvas();
+                } else if (activeGif) {
+                    drawGifFrameToCanvas(time);
                 } else if (activeMedia === sourceImage) {
                     drawMediaToCanvas();
                 }
