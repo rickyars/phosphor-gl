@@ -299,6 +299,9 @@
             let mediaRecorder = null;
             let recordedChunks = [];
             let isRecording = false;
+            let activeGif = null;
+            let gifFrameIndex = 0;
+            let gifFrameTime = 0;
 
             const applyEffectParams = () => {
                 crt.settings.maskIntensity = PARAMS.maskIntensity;
@@ -424,6 +427,9 @@
                     URL.revokeObjectURL(currentURL);
                     currentURL = null;
                 }
+                activeGif = null;
+                gifFrameIndex = 0;
+                gifFrameTime = 0;
                 drawPlaceholder();
             };
 
