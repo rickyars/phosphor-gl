@@ -449,6 +449,69 @@
                 currentURL = URL.createObjectURL(file);
                 resetView();
 
+                if (file.type === 'image/gif') {
+                    setStatus(`Loading GIF: ${file.name}`);
+                    const arrayBuffer = await file.arrayBuffer();
+                    try {
+                        const gif = parseGIF(arrayBuffer);
+                        const rawFrames = decompressFrames(gif, true);
+                        const gifW = rawFrames[0].dims.width;
+                        const gifH = rawFrames[0].dims.height;
+
+                        // Offscreen canvas at GIF's native size for compositing patches
+                        const compCanvas = document.createElement('canvas');
+                        compCanvas.width = gifW;
+                        compCanvas.height = gifH;
+                        const compCtx = compCanvas.getContext('2d');
+
+                        // Scaled canvas at mediaCanvas size for final storage
+                        const scaleCanvas = document.createElement('canvas');
+                        scaleCanvas.width = mediaCanvas.width;
+                        scaleCanvas.height = mediaCanvas.height;
+                        const scaleCtx = scaleCanvas.getContext('2d');
+
+                        const scale = Math.min(mediaCanvas.width / gifW, mediaCanvas.height / gifH);
+                        const dw = gifW * scale;
+                        const dh = gifH * scale;
+                        const dx = (mediaCanvas.width - dw) / 2;
+                        const dy = (mediaCanvas.height - dh) / 2;
+
+                        activeGif = rawFrames.map(frame => {
+                            // Composite this frame's patch onto the running composition canvas
+                            const patchData = compCtx.createImageData(frame.dims.width, frame.dims.height);
+                            patchData.data.set(frame.patch);
+                            compCtx.putImageData(patchData, frame.dims.left, frame.dims.top);
+
+                            // Scale and center onto the output-size canvas
+                            scaleCtx.fillStyle = '#000';
+                            scaleCtx.fillRect(0, 0, scaleCanvas.width, scaleCanvas.height);
+                            scaleCtx.drawImage(compCanvas, dx, dy, dw, dh);
+
+                            return {
+                                imageData: scaleCtx.getImageData(0, 0, scaleCanvas.width, scaleCanvas.height),
+                                delay: (frame.delay || 10) * 10  // GIF delay is centiseconds; convert to ms
+                            };
+                        });
+
+                        gifFrameIndex = 0;
+                        gifFrameTime = 0;
+                        useUploadedSource();
+                        setStatus(`Showing GIF: ${file.name} (${activeGif.length} frames)`);
+                    } catch (err) {
+                        console.warn('GIF decode failed, falling back to static image', err);
+                        activeGif = null;
+                        sourceImage.dataset.label = file.name;
+                        sourceImage.src = currentURL;
+                        sourceImage.addEventListener('load', () => {
+                            activeMedia = sourceImage;
+                            drawMediaToCanvas();
+                            useUploadedSource();
+                            setStatus(`GIF decode failed, showing static: ${file.name}`);
+                        }, { once: true });
+                    }
+                    return;
+                }
+
                 if (file.type.startsWith('video/')) {
                     setStatus(`Loading video: ${file.name}`);
                     sourceVideo.muted = true;
