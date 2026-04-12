@@ -430,7 +430,6 @@
                 let currentDelay = activeGif[gifFrameIndex].delay;
 
                 // Advance frame(s) if enough time has passed.
-                // Zero-delay frames are clamped to 100ms at decode time, so currentDelay >= 100.
                 let changed = false;
                 while (elapsed >= currentDelay) {
                     elapsed -= currentDelay;
@@ -522,7 +521,7 @@
 
                             return {
                                 imageData: scaleCtx.getImageData(0, 0, scaleCanvas.width, scaleCanvas.height),
-                                delay: (frame.delay || 10) * 10  // GIF delay is centiseconds; convert to ms
+                                delay: frame.delay || 100  // gifuct-js already returns ms; default 100ms for frames without GCE
                             };
                         });
 
