@@ -451,12 +451,12 @@
 
                 if (file.type === 'image/gif') {
                     setStatus(`Loading GIF: ${file.name}`);
-                    const arrayBuffer = await file.arrayBuffer();
                     try {
+                        const arrayBuffer = await file.arrayBuffer();
                         const gif = parseGIF(arrayBuffer);
                         const rawFrames = decompressFrames(gif, true);
-                        const gifW = rawFrames[0].dims.width;
-                        const gifH = rawFrames[0].dims.height;
+                        const gifW = gif.lsd.width;
+                        const gifH = gif.lsd.height;
 
                         // Offscreen canvas at GIF's native size for compositing patches
                         const compCanvas = document.createElement('canvas');
@@ -480,6 +480,9 @@
                             // Composite this frame's patch onto the running composition canvas
                             const patchData = compCtx.createImageData(frame.dims.width, frame.dims.height);
                             patchData.data.set(frame.patch);
+                            if (frame.disposalType === 2) {
+                                compCtx.clearRect(0, 0, gifW, gifH);
+                            }
                             compCtx.putImageData(patchData, frame.dims.left, frame.dims.top);
 
                             // Scale and center onto the output-size canvas
