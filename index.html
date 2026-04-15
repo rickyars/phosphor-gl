@@ -363,7 +363,8 @@
             const startMp4Encoder = (filename) => {
                 const muxer = new Muxer({
                     target: new ArrayBufferTarget(),
-                    video: { codec: 'avc', width: outputCanvas.width, height: outputCanvas.height }
+                    video: { codec: 'avc', width: outputCanvas.width, height: outputCanvas.height },
+                    fastStart: 'in-memory'
                 });
                 const encoder = new VideoEncoder({
                     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
