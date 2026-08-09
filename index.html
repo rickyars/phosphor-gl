@@ -175,7 +175,8 @@
                 <input id="file-input" type="file" accept="image/*,video/*">
             </label>
             <button id="reset-view" type="button">Reset View</button>
-            <button id="download-frame" type="button">Download</button>
+            <button id="download-png" type="button">Download PNG</button>
+            <button id="download-mp4" type="button">Download MP4</button>
             <div id="status" class="status">Showing the Shadertoy scene through the shared CRT pipeline.</div>
         </div>
     </aside>
@@ -203,7 +204,8 @@
             const sourceModeSelect = document.getElementById('source-mode');
             const fileInput = document.getElementById('file-input');
             const resetButton = document.getElementById('reset-view');
-            const downloadButton = document.getElementById('download-frame');
+            const pngButton = document.getElementById('download-png');
+            const mp4Button = document.getElementById('download-mp4');
             const status = document.getElementById('status');
             const stageLabel = document.getElementById('stage-label');
             const outputCanvas = document.getElementById('crt-canvas');
@@ -232,6 +234,7 @@
                     pulseRate: 20.0,
                     signalWaver: 0.8,
                     phosphorFlicker: 0.12,
+                    phosphorGrain: 0.02,
                     scanlineShimmer: 0.1,
                     bloomRadius: 16.0,
                     bloomGlow: 3.0,
@@ -254,6 +257,7 @@
                     pulseRate: 10.0,
                     signalWaver: 0.35,
                     phosphorFlicker: 0.05,
+                    phosphorGrain: 0.012,
                     scanlineShimmer: 0.04,
                     bloomRadius: 7.0,
                     bloomGlow: 1.35,
@@ -279,6 +283,7 @@
                 pulseRate: 20.0,
                 signalWaver: 0.8,
                 phosphorFlicker: 0.12,
+                phosphorGrain: 0.02,
                 scanlineShimmer: 0.1,
                 bloomRadius: 16.0,
                 bloomGlow: 3.0,
@@ -316,6 +321,7 @@
                 crt.settings.pulseRate = PARAMS.pulseRate;
                 crt.settings.signalWaver = PARAMS.signalWaver;
                 crt.settings.phosphorFlicker = PARAMS.phosphorFlicker;
+                crt.settings.phosphorGrain = PARAMS.phosphorGrain;
                 crt.settings.scanlineShimmer = PARAMS.scanlineShimmer;
                 crt.settings.bloomRadius = PARAMS.bloomRadius;
                 crt.settings.bloomGlow = PARAMS.bloomGlow;
@@ -373,8 +379,8 @@
                         setStatus('Encoding error: ' + e.message);
                         isExporting = false;
                         exportState = null;
-                        downloadButton.disabled = false;
-                        downloadButton.textContent = 'Download';
+                        mp4Button.disabled = false;
+                        mp4Button.textContent = 'Download MP4';
                     }
                 });
                 encoder.configure({
@@ -407,8 +413,8 @@
                 setTimeout(() => URL.revokeObjectURL(url), 1000);
                 isExporting = false;
                 exportState = null;
-                downloadButton.disabled = false;
-                downloadButton.textContent = 'Download';
+                mp4Button.disabled = false;
+                mp4Button.textContent = 'Download MP4';
                 setStatus('Saved: ' + state.filename);
             };
 
@@ -423,8 +429,8 @@
             const exportGif = async (filename) => {
                 if (!canExportMp4() || !activeGif || activeGif.length === 0) return;
                 isExporting = true;
-                downloadButton.disabled = true;
-                downloadButton.textContent = 'Encoding…';
+                mp4Button.disabled = true;
+                mp4Button.textContent = 'Encoding…';
                 setStatus('Encoding GIF to MP4…');
 
                 const savedFrameIndex = gifFrameIndex;
@@ -443,15 +449,15 @@
                         encodeOutputFrame(state, cumulativeMicros, durationMicros);
                         cumulativeMicros += durationMicros;
                         syntheticTime += gifFrame.delay;
-                        downloadButton.textContent = 'Encoding… ' + Math.round((i + 1) / activeGif.length * 100) + '%';
+                        mp4Button.textContent = 'Encoding… ' + Math.round((i + 1) / activeGif.length * 100) + '%';
                     }
                     await finalizeMp4Export(state);
                 } catch (e) {
                     setStatus('GIF export failed: ' + e.message);
                     isExporting = false;
                     exportState = null;
-                    downloadButton.disabled = false;
-                    downloadButton.textContent = 'Download';
+                    mp4Button.disabled = false;
+                    mp4Button.textContent = 'Download MP4';
                 } finally {
                     gifFrameIndex = savedFrameIndex;
                     gifFrameTime = savedFrameTime;
@@ -461,8 +467,8 @@
             const exportVideo = (filename) => {
                 if (!canExportMp4()) return;
                 isExporting = true;
-                downloadButton.disabled = true;
-                downloadButton.textContent = 'Encoding…';
+                mp4Button.disabled = true;
+                mp4Button.textContent = 'Encoding…';
 
                 const startEncoder = () => {
                     const state = startMp4Encoder(filename);
@@ -483,11 +489,22 @@
             const exportDemo = (filename) => {
                 if (!canExportMp4()) return;
                 isExporting = true;
-                downloadButton.disabled = true;
-                downloadButton.textContent = 'Encoding… 0%';
+                mp4Button.disabled = true;
+                mp4Button.textContent = 'Encoding… 0%';
                 setStatus('Recording Shadertoy demo — 8 seconds…');
                 const state = startMp4Encoder(filename);
                 state.type = 'demo';
+                exportState = state;
+            };
+
+            const exportStill = (filename) => {
+                if (!canExportMp4()) return;
+                isExporting = true;
+                mp4Button.disabled = true;
+                mp4Button.textContent = 'Encoding… 0%';
+                setStatus('Recording still image — 8 seconds…');
+                const state = startMp4Encoder(filename);
+                state.type = 'still';
                 exportState = state;
             };
 
@@ -712,33 +729,17 @@
             });
 
             resetButton.addEventListener('click', resetView);
-            downloadButton.addEventListener('click', () => {
-                if (isExporting) return;
 
-                const slug = (activeSource === 'demo'
-                    ? 'shadertoy-scene'
-                    : ((activeMedia && activeMedia.dataset.label) || (activeGif ? 'animated' : 'crt-output'))
-                        .toLowerCase()
-                        .replace(/\.[^/.]+$/, '')
-                        .replace(/[^a-z0-9]+/g, '-')
-                        .replace(/^-+|-+$/g, '')) || 'crt-output';
+            const exportSlug = () => (activeSource === 'demo'
+                ? 'shadertoy-scene'
+                : ((activeMedia && activeMedia.dataset.label) || (activeGif ? 'animated' : 'crt-output'))
+                    .toLowerCase()
+                    .replace(/\.[^/.]+$/, '')
+                    .replace(/[^a-z0-9]+/g, '-')
+                    .replace(/^-+|-+$/g, '')) || 'crt-output';
 
-                if (activeSource === 'demo') {
-                    exportDemo(slug + '-crt.mp4');
-                    return;
-                }
-
-                if (activeGif) {
-                    exportGif(slug + '-crt.mp4');
-                    return;
-                }
-
-                if (activeMedia === sourceVideo) {
-                    exportVideo(slug + '-crt.mp4');
-                    return;
-                }
-
-                // Static image — PNG
+            pngButton.addEventListener('click', () => {
+                const filename = exportSlug() + '-crt.png';
                 requestAnimationFrame(() => {
                     outputCanvas.toBlob((blob) => {
                         if (!blob) {
@@ -748,11 +749,29 @@
                         const url = URL.createObjectURL(blob);
                         const link = document.createElement('a');
                         link.href = url;
-                        link.download = slug + '-crt.png';
+                        link.download = filename;
                         link.click();
                         setTimeout(() => URL.revokeObjectURL(url), 1000);
+                        setStatus('Saved: ' + filename);
                     }, 'image/png');
                 });
+            });
+
+            mp4Button.addEventListener('click', () => {
+                if (isExporting) return;
+                const filename = exportSlug() + '-crt.mp4';
+
+                if (activeSource === 'demo') {
+                    exportDemo(filename);
+                } else if (activeGif) {
+                    exportGif(filename);
+                } else if (activeMedia === sourceVideo) {
+                    exportVideo(filename);
+                } else if (activeMedia === sourceImage) {
+                    exportStill(filename);
+                } else {
+                    setStatus('Upload an image or video, or use the Shadertoy scene, to export MP4.');
+                }
             });
             pane = new Tweakpane.Pane({ title: 'CRT Controls' });
             const bind = (folder, key, options, setter) => {
@@ -809,6 +828,7 @@
             const flavorFolder = pane.addFolder({ title: 'Flavor' });
             bind(flavorFolder, 'signalWaver', { min: 0.0, max: 4.0 }, (value) => crt.settings.signalWaver = value);
             bind(flavorFolder, 'phosphorFlicker', { min: 0.0, max: 0.5 }, (value) => crt.settings.phosphorFlicker = value);
+            bind(flavorFolder, 'phosphorGrain', { min: 0.0, max: 0.1 }, (value) => crt.settings.phosphorGrain = value);
             bind(flavorFolder, 'scanlineShimmer', { min: 0.0, max: 0.5 }, (value) => crt.settings.scanlineShimmer = value);
             pane.addInput(PARAMS, 'gammaEnabled', { label: 'Display Gamma' }).on('change', ({ value }) => {
                 crt.settings.gammaEnabled = value ? 1.0 : 0.0;
@@ -882,7 +902,7 @@
 
                     if (exportState.type === 'video') {
                         const progress = Math.min(sourceVideo.currentTime / sourceVideo.duration, 1);
-                        downloadButton.textContent = 'Encoding… ' + Math.round(progress * 100) + '%';
+                        mp4Button.textContent = 'Encoding… ' + Math.round(progress * 100) + '%';
                         setStatus('Recording video: ' + sourceVideo.currentTime.toFixed(1) + 's / ' + sourceVideo.duration.toFixed(1) + 's');
                         if (sourceVideo.currentTime >= sourceVideo.duration - 0.1) {
                             exportState.done = true;
@@ -890,22 +910,23 @@
                                 setStatus('Export failed: ' + e.message);
                                 isExporting = false;
                                 exportState = null;
-                                downloadButton.disabled = false;
-                                downloadButton.textContent = 'Download';
+                                mp4Button.disabled = false;
+                                mp4Button.textContent = 'Download MP4';
                             });
                         }
-                    } else if (exportState.type === 'demo') {
+                    } else if (exportState.type === 'demo' || exportState.type === 'still') {
+                        const label = exportState.type === 'still' ? 'still image' : 'demo';
                         const progress = Math.min(elapsed / 8000, 1);
-                        downloadButton.textContent = 'Encoding… ' + Math.round(progress * 100) + '%';
-                        setStatus('Recording demo: ' + (elapsed / 1000).toFixed(1) + 's / 8s');
+                        mp4Button.textContent = 'Encoding… ' + Math.round(progress * 100) + '%';
+                        setStatus('Recording ' + label + ': ' + (elapsed / 1000).toFixed(1) + 's / 8s');
                         if (elapsed >= 8000) {
                             exportState.done = true;
                             finalizeMp4Export(exportState).catch(e => {
                                 setStatus('Export failed: ' + e.message);
                                 isExporting = false;
                                 exportState = null;
-                                downloadButton.disabled = false;
-                                downloadButton.textContent = 'Download';
+                                mp4Button.disabled = false;
+                                mp4Button.textContent = 'Download MP4';
                             });
                         }
                     } else {
@@ -913,8 +934,8 @@
                         setStatus('Export error: unknown export type.');
                         isExporting = false;
                         exportState = null;
-                        downloadButton.disabled = false;
-                        downloadButton.textContent = 'Download';
+                        mp4Button.disabled = false;
+                        mp4Button.textContent = 'Download MP4';
                     }
                 }
                 requestAnimationFrame(loop);

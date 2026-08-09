@@ -25,6 +25,7 @@ uniform float uPulseWidth;
 uniform float uPulseRate;
 uniform float uSignalWaver;
 uniform float uPhosphorFlicker;
+uniform float uPhosphorGrain;
 uniform float uScanlineShimmer;
 uniform float uZoom;
 uniform vec2 uPan;
@@ -88,6 +89,9 @@ void main() {
 
     float shimmerNoise = bn(vec2(0.0, floor(pixel.y / uMaskSize)), 13.0).r - 0.5;
     color *= 1.0 + shimmerNoise * uScanlineShimmer;
+
+    float grain = bn(pixel, 23.0).r - 0.5;
+    color += grain * uPhosphorGrain;
 
     color *= uExposure;
 
@@ -165,6 +169,7 @@ class CRTShader {
             pulseRate: 20.0,
             signalWaver: 0.8,
             phosphorFlicker: 0.12,
+            phosphorGrain: 0.02,
             scanlineShimmer: 0.1,
             bloomRadius: 16.0,
             bloomGlow: 3.0,
@@ -211,6 +216,7 @@ class CRTShader {
             pulseRate: loc(this.progCRT, 'uPulseRate'),
             signalWaver: loc(this.progCRT, 'uSignalWaver'),
             phosphorFlicker: loc(this.progCRT, 'uPhosphorFlicker'),
+            phosphorGrain: loc(this.progCRT, 'uPhosphorGrain'),
             scanlineShimmer: loc(this.progCRT, 'uScanlineShimmer'),
             zoom: loc(this.progCRT, 'uZoom'),
             pan: loc(this.progCRT, 'uPan'),
@@ -284,6 +290,7 @@ class CRTShader {
         gl.uniform1f(this.uCRT.pulseRate, s.pulseRate);
         gl.uniform1f(this.uCRT.signalWaver, s.signalWaver);
         gl.uniform1f(this.uCRT.phosphorFlicker, s.phosphorFlicker);
+        gl.uniform1f(this.uCRT.phosphorGrain, s.phosphorGrain);
         gl.uniform1f(this.uCRT.scanlineShimmer, s.scanlineShimmer);
         gl.uniform1f(this.uCRT.zoom, s.zoom);
         gl.uniform2f(this.uCRT.pan, s.pan.x, s.pan.y);
